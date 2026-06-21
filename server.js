@@ -5,6 +5,7 @@ const fs = require('fs');
 const path = require('path');
 const { Server } = require('socket.io');
 const mediasoup = require('mediasoup');
+const { spawn } = require('child_process');
 
 // ─── Configuration ───────────────────────────────────────────────────────────
 
@@ -185,6 +186,46 @@ async function main() {
     const workerAlive = worker && !worker.closed;
     res.status(workerAlive ? 200 : 503).json({ ok: workerAlive, workerPid: worker?.pid ?? null });
   });
+
+  // ─── Bot API ───────────────────────────────────────────────────────────────
+  const botProcesses = new Map(); // roomId → ChildProcess
+
+  app.post('/api/bot/join', (req, res) => {
+    const { roomId } = req.body;
+    if (!roomId) return res.status(400).json({ error: 'roomId required' });
+    if (botProcesses.has(roomId)) return res.json({ ok: true, status: 'already_running' });
+
+    const proto = IS_PROD ? 'http' : 'https';
+    const botEnv = {
+      ...process.env,
+      ROOM_ID:      roomId,
+      SERVER_URL:   `${proto}://localhost:${PORT}`,
+      NODE_TLS_REJECT_UNAUTHORIZED: '0',
+    };
+
+    const bot = spawn(process.execPath, [path.join(__dirname, 'bot', 'index.js')], {
+      env: botEnv, stdio: 'inherit',
+    });
+
+    botProcesses.set(roomId, bot);
+    bot.on('exit', () => botProcesses.delete(roomId));
+
+    console.log(`[bot] spawned for room "${roomId}" pid=${bot.pid}`);
+    res.json({ ok: true, status: 'started', pid: bot.pid });
+  });
+
+  app.post('/api/bot/leave', (req, res) => {
+    const { roomId } = req.body;
+    const bot = botProcesses.get(roomId);
+    if (!bot) return res.json({ ok: true, status: 'not_running' });
+    bot.kill('SIGTERM');
+    res.json({ ok: true, status: 'stopped' });
+  });
+
+  app.get('/api/bot/status/:roomId', (req, res) => {
+    res.json({ running: botProcesses.has(req.params.roomId) });
+  });
+
   app.use(express.static(path.join(__dirname, 'public')));
 
   const server = createServer(app);

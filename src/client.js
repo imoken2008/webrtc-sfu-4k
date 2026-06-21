@@ -25,6 +25,7 @@ const muteBtn          = $('mute-btn');
 const videoBtn         = $('video-btn');
 const cameraSelect     = $('camera-select');
 const leaveBtn         = $('leave-btn');
+const botBtn           = $('bot-btn');
 const participantCnt = $('participant-count');
 
 // ─── State ────────────────────────────────────────────────────────────────────
@@ -520,6 +521,8 @@ async function join() {
     inConference = true;
     startKeepalive();
     startTranscription();
+    botBtn.disabled = false;
+    syncBotStatus();
     lastBwStats = { sendBytes: 0, recvBytes: 0, time: 0 };
     lastQualityStats = { limitReason: null, frameWidth: 0, frameHeight: 0, fps: 0, nackCount: 0, upKbps: 0 };
     bandwidthTimer = setInterval(updateBandwidth, 3000);
@@ -1197,6 +1200,33 @@ cameraSelect.addEventListener('change', async () => {
   } finally {
     cameraSelect.disabled = false;
   }
+});
+
+// ─── Bot Button ───────────────────────────────────────────────────────────────
+
+async function syncBotStatus() {
+  if (!roomId) return;
+  try {
+    const r = await fetch(`/api/bot/status/${encodeURIComponent(roomId)}`);
+    const { running } = await r.json();
+    botBtn.textContent = running ? '🤖 ボット退出' : '🤖 ボットを呼ぶ';
+    botBtn.classList.toggle('active', running);
+  } catch (_) {}
+}
+
+botBtn.addEventListener('click', async () => {
+  if (!roomId) return;
+  botBtn.disabled = true;
+  const isRunning = botBtn.classList.contains('active');
+  try {
+    await fetch(`/api/bot/${isRunning ? 'leave' : 'join'}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ roomId }),
+    });
+    setTimeout(syncBotStatus, 800);
+  } catch (_) {}
+  botBtn.disabled = false;
 });
 
 leaveBtn.addEventListener('click', () => {
