@@ -1,0 +1,489 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>4K WebRTC SFU 会議</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    :root {
+      --accent: #6C63FF;
+      --accent2: #9B59B6;
+      --danger: #e74c3c;
+      --bg: #0a0a0f;
+      --surface: #13131f;
+      --border: #1e1e30;
+      --text: #e8e8f0;
+      --muted: #6b6b80;
+    }
+
+    html, body {
+      height: 100%;
+      background: var(--bg);
+      color: var(--text);
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Hiragino Sans', sans-serif;
+      overflow: hidden;
+    }
+
+    /* ── Join ─────────────────────────────────────────────────────── */
+
+    #join-section {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      height: 100vh;
+    }
+
+    .join-card {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 20px;
+      padding: 44px 40px;
+      width: 420px;
+      box-shadow: 0 24px 80px rgba(0,0,0,.6);
+    }
+
+    .join-card h1 {
+      font-size: 26px;
+      font-weight: 700;
+      letter-spacing: -0.5px;
+      background: linear-gradient(135deg, var(--accent), var(--accent2));
+      -webkit-background-clip: text;
+      -webkit-text-fill-color: transparent;
+      background-clip: text;
+      margin-bottom: 6px;
+    }
+
+    /* connection status indicator */
+    .conn-row {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      margin-bottom: 20px;
+      font-size: 12px;
+      color: var(--muted);
+    }
+    .dot {
+      width: 8px; height: 8px;
+      border-radius: 50%;
+      flex-shrink: 0;
+    }
+    .dot.green { background: #2ecc71; box-shadow: 0 0 6px #2ecc71; }
+    .dot.red   { background: #e74c3c; box-shadow: 0 0 6px #e74c3c; }
+
+    .badge {
+      display: inline-block;
+      background: linear-gradient(135deg, #f5576c, #f093fb);
+      color: #fff;
+      font-size: 10px;
+      font-weight: 800;
+      letter-spacing: 2px;
+      padding: 3px 10px;
+      border-radius: 20px;
+      margin-bottom: 28px;
+    }
+
+    label {
+      display: block;
+      font-size: 12px;
+      font-weight: 600;
+      color: var(--muted);
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+      margin-bottom: 6px;
+    }
+
+    .field { margin-bottom: 18px; }
+
+    input[type="text"] {
+      width: 100%;
+      padding: 11px 14px;
+      background: var(--bg);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      color: var(--text);
+      font-size: 15px;
+      outline: none;
+      transition: border-color .2s;
+    }
+    input[type="text"]:focus { border-color: var(--accent); }
+
+    #join-btn {
+      width: 100%;
+      margin-top: 4px;
+      padding: 13px;
+      background: linear-gradient(135deg, var(--accent), var(--accent2));
+      border: none;
+      border-radius: 10px;
+      color: #fff;
+      font-size: 15px;
+      font-weight: 600;
+      cursor: pointer;
+      transition: opacity .2s, transform .1s;
+    }
+    #join-btn:hover:not(:disabled) { opacity: .9; transform: translateY(-1px); }
+    #join-btn:disabled { opacity: .5; cursor: not-allowed; }
+
+    #join-status {
+      margin-top: 14px;
+      font-size: 13px;
+      color: var(--muted);
+      text-align: center;
+      min-height: 20px;
+    }
+
+    .hint {
+      margin-top: 18px;
+      padding: 12px;
+      background: rgba(108,99,255,.08);
+      border: 1px solid rgba(108,99,255,.2);
+      border-radius: 8px;
+      font-size: 12px;
+      color: var(--muted);
+      line-height: 1.6;
+    }
+    .hint strong { color: var(--accent); }
+
+    /* ── Conference ───────────────────────────────────────────────── */
+
+    #conf-section {
+      display: flex;
+      flex-direction: column;
+      height: 100vh;
+    }
+
+    /* Quality log toast */
+    #quality-log {
+      position: fixed;
+      top: 58px;
+      right: 14px;
+      width: 300px;
+      z-index: 200;
+      pointer-events: none;
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+    }
+    .quality-msg {
+      background: rgba(20,20,32,0.93);
+      border-left: 3px solid var(--accent);
+      color: var(--text);
+      font-size: 12px;
+      line-height: 1.5;
+      padding: 7px 11px;
+      border-radius: 6px;
+      animation: qfade 9s forwards;
+    }
+    .quality-msg.down { border-left-color: #f87171; }
+    .quality-msg.up   { border-left-color: #4ade80; }
+    @keyframes qfade {
+      0%,70% { opacity: 1; }
+      100%    { opacity: 0; }
+    }
+
+    /* Top bar */
+    #top-bar {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 10px 20px;
+      background: var(--surface);
+      border-bottom: 1px solid var(--border);
+      flex-shrink: 0;
+      gap: 12px;
+    }
+
+    #top-bar .logo {
+      font-weight: 700;
+      font-size: 15px;
+      background: linear-gradient(135deg, var(--accent), var(--accent2));
+      -webkit-background-clip: text;
+      -webkit-text-fill-color: transparent;
+      background-clip: text;
+      white-space: nowrap;
+    }
+
+    #conf-room {
+      font-size: 13px;
+      color: var(--muted);
+      white-space: nowrap;
+    }
+
+    #participant-count {
+      font-size: 12px;
+      background: rgba(108,99,255,.15);
+      color: var(--accent);
+      padding: 3px 10px;
+      border-radius: 20px;
+      font-weight: 600;
+      white-space: nowrap;
+    }
+
+    #conf-status {
+      font-size: 12px;
+      color: var(--muted);
+      white-space: nowrap;
+    }
+
+    /* Video grid */
+    #video-grid {
+      flex: 1;
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(360px, 1fr));
+      grid-auto-rows: minmax(0, 1fr);
+      gap: 3px;
+      background: #000;
+      overflow: hidden;
+    }
+
+    .video-wrap {
+      position: relative;
+      background: var(--surface);
+      overflow: hidden;
+    }
+
+    .video-wrap.paused::after { display: none; }
+
+    #local-wrap {
+      display: none !important;
+    }
+
+    video {
+      width: 100%;
+      height: 100%;
+      object-fit: cover;
+      display: block;
+    }
+
+    .name-tag {
+      position: absolute;
+      bottom: 10px;
+      left: 10px;
+      background: rgba(0,0,0,.65);
+      backdrop-filter: blur(4px);
+      color: #fff;
+      font-size: 12px;
+      font-weight: 500;
+      padding: 4px 10px;
+      border-radius: 6px;
+      pointer-events: none;
+    }
+
+    .res-tag {
+      position: absolute;
+      top: 10px;
+      right: 10px;
+      background: rgba(108,99,255,.8);
+      color: #fff;
+      font-size: 10px;
+      font-weight: 700;
+      padding: 2px 8px;
+      border-radius: 4px;
+      letter-spacing: .3px;
+      pointer-events: none;
+    }
+
+    /* Controls */
+
+
+    .ctrl-btn {
+      padding: 6px 14px;
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      background: var(--bg);
+      color: var(--text);
+      font-size: 13px;
+      font-weight: 500;
+      cursor: pointer;
+      transition: all .15s;
+    }
+    .ctrl-btn:hover { background: var(--border); }
+    .ctrl-btn.active {
+      background: rgba(231,76,60,.15);
+      border-color: var(--danger);
+      color: var(--danger);
+    }
+
+    #leave-btn {
+      background: rgba(231,76,60,.1);
+      border-color: var(--danger);
+      color: var(--danger);
+    }
+    #leave-btn:hover { background: rgba(231,76,60,.25); }
+
+    .ctrl-select {
+      padding: 6px 8px;
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      background: var(--bg);
+      color: var(--text);
+      font-size: 13px;
+      font-weight: 500;
+      cursor: pointer;
+      max-width: 180px;
+    }
+
+    /* ── Emotion overlay (top-right of each video tile) ─────────────── */
+    .emotion-overlay {
+      position: absolute;
+      top: 36px;
+      right: 10px;
+      background: rgba(0,0,0,0.62);
+      backdrop-filter: blur(6px);
+      border-radius: 8px;
+      padding: 7px 10px;
+      min-width: 148px;
+      z-index: 4;
+      pointer-events: none;
+    }
+    .emo-row {
+      display: flex;
+      align-items: center;
+      gap: 5px;
+      margin-bottom: 4px;
+      font-size: 11px;
+      color: #fff;
+      line-height: 1;
+    }
+    .emo-row:last-child { margin-bottom: 0; }
+    .emo-lbl { flex: 1; white-space: nowrap; }
+    .emo-pct { font-size: 10px; color: rgba(255,255,255,0.65); width: 28px; text-align: right; flex-shrink: 0; }
+    .emo-bar-bg { width: 48px; height: 4px; background: rgba(255,255,255,0.18); border-radius: 2px; flex-shrink: 0; }
+    .emo-bar { height: 100%; background: var(--accent); border-radius: 2px; transition: width .4s; }
+
+    /* ── Bandwidth badge ──────────────────────────────────────────────── */
+    .bw-badge {
+      font-size: 11px;
+      color: #2ecc71;
+      font-family: monospace;
+      white-space: nowrap;
+      margin-left: auto;
+    }
+
+    /* ── Scene detection overlay (bottom-left of each tile) ──────────── */
+    .scene-overlay {
+      position: absolute;
+      bottom: 40px;
+      left: 10px;
+      background: rgba(0,0,0,0.55);
+      backdrop-filter: blur(4px);
+      border-radius: 6px;
+      padding: 4px 8px;
+      z-index: 4;
+      pointer-events: none;
+      max-width: 200px;
+    }
+    .scene-chip {
+      font-size: 10px;
+      color: rgba(255,255,255,0.82);
+      display: block;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      line-height: 1.6;
+    }
+
+    /* ── Subtitle overlay (spoken text, bottom-center of each tile) ──── */
+    .subtitle {
+      position: absolute;
+      bottom: 8px;
+      left: 8px;
+      right: 8px;
+      text-align: center;
+      background: rgba(0,0,0,0.78);
+      color: #fff;
+      font-size: 14px;
+      padding: 5px 10px;
+      border-radius: 7px;
+      opacity: 0;
+      transition: opacity 0.3s;
+      z-index: 5;
+      pointer-events: none;
+    }
+
+    /* ── My-subtitle: own speech shown at bottom of screen ───────────── */
+    #my-subtitle {
+      position: fixed;
+      bottom: 76px;
+      left: 50%;
+      transform: translateX(-50%);
+      background: rgba(0,0,0,0.78);
+      color: #fff;
+      font-size: 14px;
+      padding: 5px 14px;
+      border-radius: 8px;
+      opacity: 0;
+      transition: opacity 0.3s;
+      z-index: 200;
+      pointer-events: none;
+      max-width: 80vw;
+      text-align: center;
+    }
+
+/* Utilities */
+    .hidden { display: none !important; }
+  </style>
+</head>
+<body>
+
+<!-- ── Join ────────────────────────────────────────────────────────────── -->
+<div id="join-section">
+  <div class="join-card">
+    <h1>4K WebRTC 会議</h1>
+    <div class="badge">4K ULTRA HD · SFU</div>
+    <div class="conn-row">
+      <span class="dot red" id="conn-indicator"></span>
+      <span id="conn-label">サーバーに接続中...</span>
+    </div>
+
+    <div class="field">
+      <label>ルームID</label>
+      <input type="text" id="room-id" value="room-001" placeholder="任意のルーム名">
+    </div>
+    <div class="field">
+      <label>表示名</label>
+      <input type="text" id="display-name" placeholder="あなたの名前">
+    </div>
+
+    <button id="join-btn" disabled>参加する</button>
+    <p id="join-status"></p>
+
+    <div class="hint">
+      <strong>4K対応</strong> — VP9 / AV1 / H.264 を自動選択。<br>
+      最大 25 Mbps でエンコード。カメラが 4K 非対応の場合は 1080p に自動フォールバック。
+    </div>
+  </div>
+</div>
+
+<!-- ── Quality log toast (画面右上) ────────────────────────────────────── -->
+<div id="quality-log"></div>
+
+<!-- ── Conference ──────────────────────────────────────────────────────── -->
+<div id="conf-section" class="hidden">
+  <div id="top-bar">
+    <span class="logo">4K SFU</span>
+    <span id="conf-room">—</span>
+    <span id="participant-count">参加者 1人</span>
+    <span id="conf-status">—</span>
+    <span id="bandwidth" class="bw-badge"></span>
+    <button class="ctrl-btn" id="mute-btn">マイクOFF</button>
+    <button class="ctrl-btn" id="video-btn">カメラOFF</button>
+    <select class="ctrl-select" id="camera-select" disabled><option>📷 カメラ</option></select>
+    <button class="ctrl-btn" id="leave-btn">退出</button>
+  </div>
+
+  <div id="video-grid">
+    <div id="local-wrap" class="video-wrap">
+      <video id="local-video" autoplay muted playsinline></video>
+      <div class="name-tag" id="local-name">あなた</div>
+      <div class="res-tag" id="local-res">—</div>
+    </div>
+  </div>
+
+  <div id="my-subtitle"></div>
+</div>
+
+<script src="/bundle.js"></script>
+</body>
+</html>

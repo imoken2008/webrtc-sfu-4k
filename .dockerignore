@@ -1,0 +1,9 @@
+node_modules
+ssl
+*.pem
+.env
+.git
+fly.toml
+start.sh
+setup.sh
+*.log
