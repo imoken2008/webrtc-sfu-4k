@@ -231,8 +231,8 @@ async function main() {
   const server = createServer(app);
   io = new Server(server, {
     cors: { origin: '*' },
-    pingTimeout: 60000,
-    pingInterval: 30000,
+    pingTimeout: 20000,
+    pingInterval: 10000,
   });
 
   io.on('connection', (socket) => {
