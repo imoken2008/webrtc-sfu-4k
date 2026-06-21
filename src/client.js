@@ -380,16 +380,31 @@ const socket = io({ secure: true });
 
 let inConference = false; // true while in a conference room
 let keepaliveTimer = null;
+let wakeLock = null;
+
+async function acquireWakeLock() {
+  try {
+    if ('wakeLock' in navigator) {
+      wakeLock = await navigator.wakeLock.request('screen');
+      wakeLock.addEventListener('release', () => {
+        // 画面ロック解除後に再取得（iOS対応）
+        if (inConference) acquireWakeLock();
+      });
+    }
+  } catch (_) {}
+}
 
 function startKeepalive() {
   stopKeepalive();
+  acquireWakeLock();
   const ping = () => fetch('/ping?t=' + Date.now(), { cache: 'no-store' }).catch(() => {});
-  ping(); // immediate first ping
-  keepaliveTimer = setInterval(ping, 30000); // every 30s — keeps fly.io machine alive
+  ping();
+  keepaliveTimer = setInterval(ping, 8000); // 8秒ごと（NATタイムアウト対策）
 }
 
 function stopKeepalive() {
   if (keepaliveTimer) { clearInterval(keepaliveTimer); keepaliveTimer = null; }
+  if (wakeLock) { wakeLock.release().catch(() => {}); wakeLock = null; }
 }
 
 socket.on('connect', () => {
