@@ -256,7 +256,7 @@ async function main() {
           webRtcServer,
           appData: { direction },
           // REMBフィードバックを有効化してクライアントの送信帯域を輻輳制御させる
-          maxIncomingBitrate: 8_000_000,
+          maxIncomingBitrate: 25_000_000,
           initialAvailableOutgoingBitrate: 5_000_000,
         });
         transport.on('icestatechange',  (s) => console.log(`[ICE:${peer.displayName}:${direction}] ${s}`));

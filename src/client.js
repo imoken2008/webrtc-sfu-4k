@@ -567,8 +567,9 @@ async function getLocalStream() {
   };
 
   const videoProfiles = [
-    { width: { ideal: 1280 }, height: { ideal: 720 }, frameRate: { ideal: 30 } },  // HD start (低負荷)
-    { width: { ideal: 1920 }, height: { ideal: 1080 }, frameRate: { ideal: 30 } },
+    { width: { ideal: 3840 }, height: { ideal: 2160 }, frameRate: { ideal: 30 } },  // 4K
+    { width: { ideal: 1920 }, height: { ideal: 1080 }, frameRate: { ideal: 30 } },  // FHD
+    { width: { ideal: 1280 }, height: { ideal: 720  }, frameRate: { ideal: 30 } },  // HD
     true,  // absolute minimum: any camera at any resolution
   ];
 
@@ -728,12 +729,16 @@ async function produceMedia() {
 
   const videoTrack = localStream.getVideoTracks()[0];
   if (videoTrack) {
+    const { width = 0, height = 0 } = videoTrack.getSettings();
+    const is4K = width >= 3840 || height >= 2160;
+    const maxBitrate   = is4K ? 25_000_000 : 5_000_000;
+    const googleMaxKbps = is4K ? 25000 : 5000;
     videoProducer = await sendTransport.produce({
       track: videoTrack,
-      encodings: [{ maxBitrate: 5_000_000 }],
+      encodings: [{ maxBitrate }],
       codecOptions: {
-        videoGoogleStartBitrate: 500,   // 500kbps スタート → GCCが徐々にランプアップ
-        videoGoogleMaxBitrate: 5000,    // HD上限 5Mbps
+        videoGoogleStartBitrate: is4K ? 2000 : 500,
+        videoGoogleMaxBitrate: googleMaxKbps,
         videoGoogleMinBitrate: 100,
       },
     });
@@ -1072,10 +1077,17 @@ videoBtn.addEventListener('click', async () => {
       localRes.textContent = `${s.width ?? '?'}×${s.height ?? '?'} ${Math.round(s.frameRate ?? 0)}fps`;
       // Produce video
       if (sendTransport && !sendTransport.closed) {
+        const { width: sw = 0, height: sh = 0 } = track.getSettings();
+        const is4K = sw >= 3840 || sh >= 2160;
+        const maxBitrate = is4K ? 25_000_000 : 5_000_000;
         videoProducer = await sendTransport.produce({
           track,
-          encodings: [{ maxBitrate: 5_000_000 }],
-          codecOptions: { videoGoogleStartBitrate: 500, videoGoogleMaxBitrate: 5000, videoGoogleMinBitrate: 100 },
+          encodings: [{ maxBitrate }],
+          codecOptions: {
+            videoGoogleStartBitrate: is4K ? 2000 : 500,
+            videoGoogleMaxBitrate: is4K ? 25000 : 5000,
+            videoGoogleMinBitrate: 100,
+          },
         });
         const codec = videoProducer.rtpParameters.codecs[0]?.mimeType?.split('/')[1] ?? '?';
         localRes.textContent += ` | ${codec.toUpperCase()}`;
