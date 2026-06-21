@@ -26,6 +26,7 @@ COPY --from=builder /app/node_modules ./node_modules
 COPY --from=builder /app/public       ./public
 COPY package.json   ./
 COPY server.js      ./
+COPY bot/           ./bot/
 
 ENV NODE_ENV=production
 ENV PORT=8080

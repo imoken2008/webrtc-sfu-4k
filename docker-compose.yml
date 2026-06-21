@@ -11,6 +11,7 @@ services:
       PORT: "8080"
       RTC_PORT: "10000"
       ANNOUNCED_IP: ${ANNOUNCED_IP:-}
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "node", "-e",
