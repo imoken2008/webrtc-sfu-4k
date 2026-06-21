@@ -373,7 +373,7 @@ async function main() {
 
     socket.on('transcript', ({ text }, cb) => {
       try {
-        socket.to(roomId).emit('transcript', { peerId: socket.id, text });
+        socket.to(roomId).emit('transcript', { peerId: socket.id, displayName: peer?.displayName, text });
         cb?.({});
       } catch (err) { cb?.({ error: err.message }); }
     });

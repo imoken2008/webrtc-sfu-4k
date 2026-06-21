@@ -423,6 +423,52 @@
 
 /* Utilities */
     .hidden { display: none !important; }
+  #bot-panel {
+    position: fixed;
+    bottom: 70px;
+    right: 16px;
+    width: 300px;
+    max-height: 260px;
+    background: rgba(20,20,30,0.92);
+    border: 1px solid #444;
+    border-radius: 10px;
+    display: none;
+    flex-direction: column;
+    z-index: 100;
+    font-size: 13px;
+    color: #eee;
+    box-shadow: 0 4px 20px rgba(0,0,0,0.5);
+  }
+  #bot-panel.visible { display: flex; }
+  #bot-panel-header {
+    padding: 8px 12px;
+    background: rgba(80,60,160,0.6);
+    border-radius: 10px 10px 0 0;
+    font-weight: bold;
+    font-size: 12px;
+    letter-spacing: 0.05em;
+  }
+  #bot-messages {
+    padding: 8px 12px;
+    overflow-y: auto;
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+  }
+  .bot-msg {
+    background: rgba(255,255,255,0.07);
+    border-radius: 6px;
+    padding: 6px 8px;
+    line-height: 1.5;
+    animation: fadein 0.3s ease;
+  }
+  .bot-msg .bot-msg-name {
+    font-size: 10px;
+    color: #aaa;
+    margin-bottom: 2px;
+  }
+  @keyframes fadein { from { opacity:0; transform: translateY(4px); } to { opacity:1; transform: none; } }
   </style>
 </head>
 <body>
@@ -482,6 +528,11 @@
   </div>
 
   <div id="my-subtitle"></div>
+</div>
+
+<div id="bot-panel">
+  <div id="bot-panel-header">🤖 AIアシスタント</div>
+  <div id="bot-messages"></div>
 </div>
 
 <script src="/bundle.js"></script>

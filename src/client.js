@@ -1030,13 +1030,27 @@ socket.on('producerResumed', ({ peerId }) => {
   $(`peer-${peerId}`)?.classList.remove('paused');
 });
 
-socket.on('transcript', ({ peerId, text }) => {
+socket.on('transcript', ({ peerId, displayName, text }) => {
   const subEl = $(`sub-${peerId}`);
-  if (!subEl) return;
-  subEl.textContent = text;
-  subEl.style.opacity = '1';
-  clearTimeout(subEl._t);
-  subEl._t = setTimeout(() => { subEl.style.opacity = '0'; }, 4000);
+  if (subEl) {
+    subEl.textContent = text;
+    subEl.style.opacity = '1';
+    clearTimeout(subEl._t);
+    subEl._t = setTimeout(() => { subEl.style.opacity = '0'; }, 4000);
+  } else {
+    // ビデオタイルのないピア（ボット等）はボットパネルに表示
+    const panel = $('bot-panel');
+    const msgs  = $('bot-messages');
+    if (!panel || !msgs) return;
+    panel.classList.add('visible');
+    const el = document.createElement('div');
+    el.className = 'bot-msg';
+    el.innerHTML = `<div class="bot-msg-name">${displayName ?? peerId}</div>${text}`;
+    msgs.appendChild(el);
+    msgs.scrollTop = msgs.scrollHeight;
+    // 最大10件保持
+    while (msgs.children.length > 10) msgs.removeChild(msgs.firstChild);
+  }
 });
 
 // ─── Controls ─────────────────────────────────────────────────────────────────
