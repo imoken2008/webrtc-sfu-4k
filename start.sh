@@ -3,6 +3,11 @@ set -euo pipefail
 
 export PATH="$HOME/.local/node/bin:$PATH"
 
+# .env があれば読み込む
+if [[ -f "$HOME/.env" ]]; then
+  set -a; source "$HOME/.env"; set +a
+fi
+
 DIR="$(cd "$(dirname "$0")" && pwd)"
 cd "$DIR"
 

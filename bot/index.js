@@ -25,6 +25,9 @@ socket.on('connect', () => {
   socket.emit('join', { roomId: ROOM_ID, displayName: BOT_NAME }, (res) => {
     if (res?.error) { console.error('[bot] join error:', res.error); return; }
     console.log(`[bot] joined room: ${ROOM_ID}`);
+    setTimeout(() => {
+      socket.emit('transcript', { text: 'こんにちは！AIファシリテーターです。会議を始めましょう。何でも話しかけてください。' }, () => {});
+    }, 500);
   });
 });
 
