@@ -18,6 +18,28 @@ const pending = []; // debounce中に溜まった発言
 // 開発環境の自己署名証明書を許可
 process.env.NODE_TLS_REJECT_UNAUTHORIZED = '0';
 
+const SILENCE_MS = 3 * 60 * 1000; // 3分間無言なら声かけ
+let silenceTimer = null;
+
+function resetSilenceTimer() {
+  clearTimeout(silenceTimer);
+  silenceTimer = setTimeout(async () => {
+    const prompts = [
+      '少し静かになりましたね。何か話したいことや質問はありますか？',
+      'ここまでの話をまとめてもよいですか？何かご意見があれば教えてください。',
+      '進捗はいかがでしょうか？次のトピックに移りましょうか？',
+    ];
+    const text = prompts[Math.floor(Math.random() * prompts.length)];
+    say(text);
+  }, SILENCE_MS);
+}
+
+function say(text) {
+  console.log(`[bot] say: ${text}`);
+  socket.emit('transcript', { text }, () => {});
+  resetSilenceTimer();
+}
+
 const socket = io(SERVER_URL, { rejectUnauthorized: false });
 
 socket.on('connect', () => {
@@ -25,19 +47,28 @@ socket.on('connect', () => {
   socket.emit('join', { roomId: ROOM_ID, displayName: BOT_NAME }, (res) => {
     if (res?.error) { console.error('[bot] join error:', res.error); return; }
     console.log(`[bot] joined room: ${ROOM_ID}`);
-    setTimeout(() => {
-      socket.emit('transcript', { text: 'こんにちは！AIファシリテーターです。会議を始めましょう。何でも話しかけてください。' }, () => {});
-    }, 500);
+    setTimeout(() => say('こんにちは！AIファシリテーターです。何でも話しかけてください。'), 800);
   });
 });
 
-socket.on('disconnect', (reason) => console.log('[bot] disconnected:', reason));
+socket.on('disconnect', (reason) => {
+  console.log('[bot] disconnected:', reason);
+  clearTimeout(silenceTimer);
+});
+
+// 新しい参加者が入ったら挨拶する
+socket.on('newProducer', ({ displayName: newName, kind }) => {
+  if (kind !== 'audio') return; // audioのみ（videoは重複する）
+  const name = newName || '新しい参加者';
+  setTimeout(() => say(`${name}さん、ようこそ！`), 1000);
+});
 
 socket.on('transcript', async ({ peerId, displayName, text }) => {
   if (!text?.trim()) return;
   const label = displayName || peerId;
   pending.push(`${label}: ${text}`);
   console.log(`[bot] received: ${label}: ${text}`);
+  resetSilenceTimer();
 
   clearTimeout(debounceTimer);
   debounceTimer = setTimeout(() => respond(), DEBOUNCE_MS);
@@ -69,11 +100,11 @@ async function respond() {
 
     history.push({ role: 'assistant', content: reply });
     console.log(`[bot] respond: ${reply}`);
-    socket.emit('transcript', { text: reply }, () => {});
+    say(reply);
   } catch (e) {
     console.error('[bot] Anthropic error:', e.message);
   }
 }
 
-process.on('SIGINT',  () => { socket.disconnect(); process.exit(0); });
-process.on('SIGTERM', () => { socket.disconnect(); process.exit(0); });
+process.on('SIGINT',  () => { clearTimeout(silenceTimer); socket.disconnect(); process.exit(0); });
+process.on('SIGTERM', () => { clearTimeout(silenceTimer); socket.disconnect(); process.exit(0); });
