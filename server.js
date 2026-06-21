@@ -231,7 +231,7 @@ async function main() {
   const server = createServer(app);
   io = new Server(server, {
     cors: { origin: '*' },
-    pingTimeout: 20000,
+    pingTimeout: 60000,
     pingInterval: 10000,
   });
 
