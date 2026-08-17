@@ -1266,4 +1266,11 @@ leaveBtn.addEventListener('click', () => {
 
 joinBtn.addEventListener('click', join);
 roomInput.addEventListener('keypress', (e) => e.key === 'Enter' && join());
+
+// ?room=xxx で部屋を指定できるようにする。秘書ダッシュボードの「参加用リンク」が
+// これを使うので、参加者は部屋名を手打ちしなくてよい。
+(() => {
+  const r = new URLSearchParams(location.search).get('room');
+  if (r) roomInput.value = r;
+})();
 nameInput.addEventListener('keypress', (e) => e.key === 'Enter' && join());
