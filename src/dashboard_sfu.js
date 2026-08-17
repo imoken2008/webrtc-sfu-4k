@@ -9,8 +9,10 @@
  * 1つの MediaStream に全トラックを突っ込むと <video> は最初の1本しか
  * 再生しないため、peer 単位で MediaStream を分ける必要がある。
  *
- * 受信専用（getUserMedia を呼ばない）なので、ダッシュボードが平文 HTTP で
- * 開かれていても動く。RTCPeerConnection は secure context 必須ではない。
+ * 受信と送出で secure context の要否が違う点に注意:
+ *   - 受信(consume)  … RTCPeerConnection のみ。平文HTTPのページでも動く
+ *   - 送出(publish)  … getUserMedia が必要。https:// でしか許可されない
+ * そのため publish() は canPublish() で明示的に前提を確認してから動く。
  */
 
 const { Device } = require('mediasoup-client');
@@ -32,6 +34,11 @@ class SecretaryCam {
     this.consumers = new Map();
     // peerId → { stream, displayName, isIngest, producerIds:Set }
     this.peers = new Map();
+
+    // 送出側（自分のカメラ）
+    this.sendTransport = null;
+    this.localStream = null;
+    this.localProducers = [];
 
     this.opts = { ...DEFAULTS };
     this.onStatus = () => {};
@@ -214,6 +221,16 @@ class SecretaryCam {
   }
 
   _teardownMedia() {
+    // 切断時は送出も畳む（カメラを掴んだままにしない）
+    for (const p of this.localProducers || []) { try { p.close(); } catch (_) {} }
+    this.localProducers = [];
+    if (this.localStream) {
+      this.localStream.getTracks().forEach((t) => t.stop());
+      this.localStream = null;
+    }
+    try { this.sendTransport?.close(); } catch (_) {}
+    this.sendTransport = null;
+
     for (const { consumer } of this.consumers.values()) {
       try { consumer.close(); } catch (_) {}
     }
@@ -231,6 +248,89 @@ class SecretaryCam {
     this.socket = null;
     this._setState('idle');
   }
+
+  // ─── 送出（参加者が自分のカメラを部屋へ出す） ───────────────────────────
+  //
+  // getUserMedia はブラウザが secure context でしか許可しない。平文HTTPの
+  // LANアドレスで開かれている場合はここで明示的に弾き、理由を返す。
+
+  canPublish() {
+    return Boolean(
+      window.isSecureContext &&
+      navigator.mediaDevices &&
+      navigator.mediaDevices.getUserMedia
+    );
+  }
+
+  async publish({ video = true, audio = true } = {}) {
+    if (this.localStream) return this.localStream;      // 二重送出を防ぐ
+    if (!this.canPublish()) {
+      throw new Error(
+        'このページは安全な接続ではないため、ブラウザがカメラを許可しません。' +
+        'https:// で開き直してください'
+      );
+    }
+    if (!this.device || !this.socket?.connected) {
+      throw new Error('SFUハブに接続していません');
+    }
+
+    const stream = await navigator.mediaDevices.getUserMedia({
+      video: video ? { width: { ideal: 1280 }, height: { ideal: 720 } } : false,
+      audio: audio ? { echoCancellation: true, noiseSuppression: true } : false,
+    });
+
+    // 送信用トランスポートは受信用とは別に張る必要がある
+    if (!this.sendTransport) {
+      const params = await this._emit('createTransport', { direction: 'send' });
+      this.sendTransport = this.device.createSendTransport(params);
+
+      this.sendTransport.on('connect', ({ dtlsParameters }, callback, errback) => {
+        this._emit('connectTransport', { transportId: this.sendTransport.id, dtlsParameters })
+          .then(callback).catch(errback);
+      });
+
+      // produce は「トラックを載せた瞬間」にサーバへ登録しに行く
+      this.sendTransport.on('produce', ({ kind, rtpParameters, appData }, callback, errback) => {
+        this._emit('produce', { transportId: this.sendTransport.id, kind, rtpParameters, appData })
+          .then((res) => callback({ id: res.id })).catch(errback);
+      });
+
+      this.sendTransport.on('connectionstatechange', (s) => {
+        if (s === 'failed') this._setState('error', '送出のICEに失敗しました');
+      });
+    }
+
+    this.localStream = stream;
+    this.localProducers = this.localProducers || [];
+
+    for (const track of stream.getTracks()) {
+      const producer = await this.sendTransport.produce({ track });
+      this.localProducers.push(producer);
+    }
+
+    this._setState('publishing', `${stream.getTracks().length} トラック送出中`);
+    return stream;
+  }
+
+  async unpublish() {
+    for (const p of this.localProducers || []) {
+      try { p.close(); } catch (_) {}
+    }
+    this.localProducers = [];
+
+    if (this.localStream) {
+      // トラックを止めないとカメラのLEDが点いたままになる
+      this.localStream.getTracks().forEach((t) => t.stop());
+      this.localStream = null;
+    }
+
+    try { this.sendTransport?.close(); } catch (_) {}
+    this.sendTransport = null;
+
+    this._setState(this.peers.size > 0 ? 'live' : 'waiting', '送出を停止しました');
+  }
+
+  isPublishing() { return Boolean(this.localStream); }
 
   getPeers() { return [...this.peers.values()]; }
 
