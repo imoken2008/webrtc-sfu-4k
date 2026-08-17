@@ -12,6 +12,9 @@ const { spawn } = require('child_process');
 const IS_PROD    = process.env.NODE_ENV === 'production';
 const PORT       = parseInt(process.env.PORT    || (IS_PROD ? '8080' : '3443'), 10);
 const RTC_PORT   = parseInt(process.env.RTC_PORT || '10000', 10);
+// 映像を送る側（getUserMedia を使うページ）向けの HTTPS 待受。
+// 0 を指定すると HTTPS を立てない。
+const HTTPS_PORT = parseInt(process.env.HTTPS_PORT || '8443', 10);
 const ANNOUNCED_IP = process.env.ANNOUNCED_IP || (() => {
   // Auto-detect first non-loopback global IP from OS interfaces
   const os = require('os');
@@ -563,6 +566,28 @@ async function main() {
     const proto = IS_PROD ? 'http' : 'https';
     console.log(`\nReady: ${proto}://localhost:${PORT}\n`);
   });
+
+  // ── HTTPS を併設 ───────────────────────────────────────────────────────────
+  // 映像を「送る」側は getUserMedia を使うため secure context が必須で、
+  // 平文 HTTP の LAN アドレスではブラウザに拒否される。一方で受信専用の
+  // ダッシュボードは HTTP のままで動く（RTCPeerConnection は secure context 不要）。
+  // どちらも成立させるため、同じ mediasoup / socket.io を HTTPS でも待ち受ける。
+  if (IS_PROD && HTTPS_PORT) {
+    const keyPath  = path.join(__dirname, 'ssl', 'key.pem');
+    const certPath = path.join(__dirname, 'ssl', 'cert.pem');
+    if (fs.existsSync(keyPath) && fs.existsSync(certPath)) {
+      const httpsServer = require('https').createServer({
+        key:  fs.readFileSync(keyPath),
+        cert: fs.readFileSync(certPath),
+      }, app);
+      io.attach(httpsServer, { cors: { origin: '*' } });
+      httpsServer.listen(HTTPS_PORT, () => {
+        console.log(`Ready (https): https://localhost:${HTTPS_PORT}  ← 映像を送る側はこちら\n`);
+      });
+    } else {
+      console.warn(`[https] 証明書が無いため HTTPS は無効: ${keyPath}`);
+    }
+  }
 }
 
 main().catch((err) => { console.error('Fatal:', err); process.exit(1); });

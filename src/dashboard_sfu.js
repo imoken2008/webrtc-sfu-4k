@@ -5,10 +5,12 @@
  * ビルド: node build-dashboard.js
  *   → personal-ai-secretary/static/js/sfu_client.js
  *
- * 役割は「見るだけ」。カメラは Flask 側が PlainTransport でハブへ流し込んでいるので、
- * このクライアントは producer を consume して <video> に貼るだけでよい。
- * getUserMedia を呼ばないので、ダッシュボードが平文 HTTP で開かれていても動く
- * （RTCPeerConnection は secure context 必須ではない）。
+ * 部屋に送られてきた映像を「参加者ごと」に束ねて UI へ渡す。
+ * 1つの MediaStream に全トラックを突っ込むと <video> は最初の1本しか
+ * 再生しないため、peer 単位で MediaStream を分ける必要がある。
+ *
+ * 受信専用（getUserMedia を呼ばない）なので、ダッシュボードが平文 HTTP で
+ * 開かれていても動く。RTCPeerConnection は secure context 必須ではない。
  */
 
 const { Device } = require('mediasoup-client');
@@ -25,13 +27,17 @@ class SecretaryCam {
     this.socket = null;
     this.device = null;
     this.recvTransport = null;
+
+    // producerId → { consumer, peerId }
     this.consumers = new Map();
-    this.videoEl = null;
-    this.stream = null;
+    // peerId → { stream, displayName, isIngest, producerIds:Set }
+    this.peers = new Map();
+
     this.opts = { ...DEFAULTS };
     this.onStatus = () => {};
+    this.onPeerUpdate = () => {};
+    this.onPeerRemove = () => {};
     this.state = 'idle';
-    this.stopped = true;
   }
 
   _setState(state, detail) {
@@ -52,9 +58,9 @@ class SecretaryCam {
 
   async start(opts = {}) {
     this.opts = { ...DEFAULTS, ...opts };
-    this.videoEl = this.opts.videoEl || document.getElementById('camera-view-video');
     this.onStatus = this.opts.onStatus || (() => {});
-    this.stopped = false;
+    this.onPeerUpdate = this.opts.onPeerUpdate || (() => {});
+    this.onPeerRemove = this.opts.onPeerRemove || (() => {});
 
     this._setState('connecting', this.opts.hubUrl);
 
@@ -66,29 +72,33 @@ class SecretaryCam {
       timeout: 10000,
     });
 
-    this.socket.on('connect_error', (e) => {
-      this._setState('error', `ハブに接続できません (${e.message})`);
-    });
+    this.socket.on('connect_error', (e) => this._setState('error', `ハブに接続できません (${e.message})`));
 
     this.socket.on('disconnect', (reason) => {
       this._setState('disconnected', reason);
       this._teardownMedia();
     });
 
-    // 再接続時・ワーカー再起動時は join からやり直す
     this.socket.on('connect', () => this._join().catch((e) => this._setState('error', e.message)));
+
     this.socket.on('workerRestart', () => {
       this._teardownMedia();
       this._join().catch((e) => this._setState('error', e.message));
     });
 
-    // カメラ送出が（再）開始されたとき
-    this.socket.on('newProducer', ({ producerId }) => {
-      this._consume(producerId).catch((e) => this._setState('error', e.message));
+    // 誰かが映像/音声を送り始めた
+    this.socket.on('newProducer', (p) => {
+      this._consume(p).catch((e) => console.warn('[sfu] consume 失敗:', e.message));
     });
 
-    this.socket.on('producerClosed', ({ producerId }) => this._removeByProducer(producerId));
-    this.socket.on('consumerClosed', ({ consumerId }) => this._removeConsumer(consumerId));
+    // 送出停止・退出
+    this.socket.on('producerClosed', ({ producerId }) => this._removeProducer(producerId));
+    this.socket.on('consumerClosed', ({ consumerId }) => {
+      for (const [pid, c] of this.consumers) {
+        if (c.consumer.id === consumerId) { this._removeProducer(pid); return; }
+      }
+    });
+    this.socket.on('peerLeft', ({ peerId }) => this._removePeer(peerId));
   }
 
   async _join() {
@@ -97,7 +107,7 @@ class SecretaryCam {
       displayName: this.opts.displayName,
     });
 
-    // Device は使い回せないので join のたびに作る
+    // Device は load 済みのものを使い回せないので join のたびに作る
     this.device = new Device();
     await this.device.load({ routerRtpCapabilities });
 
@@ -117,15 +127,13 @@ class SecretaryCam {
     this._setState('joined', `producer ${existingProducers.length} 件`);
 
     for (const p of existingProducers) {
-      if (p.kind === 'video') await this._consume(p.producerId);
+      await this._consume(p).catch((e) => console.warn('[sfu] consume 失敗:', e.message));
     }
 
-    if (existingProducers.length === 0) {
-      this._setState('waiting', 'カメラ送出待ち');
-    }
+    if (existingProducers.length === 0) this._setState('waiting', '映像待ち');
   }
 
-  async _consume(producerId) {
+  async _consume({ producerId, peerId, displayName, kind, source }) {
     if (!this.recvTransport || this.consumers.has(producerId)) return;
 
     const params = await this._emit('consume', {
@@ -141,67 +149,98 @@ class SecretaryCam {
       rtpParameters: params.rtpParameters,
     });
 
-    this.consumers.set(producerId, consumer);
+    this.consumers.set(producerId, { consumer, peerId });
 
-    if (!this.stream) this.stream = new MediaStream();
-    this.stream.addTrack(consumer.track);
-
-    if (this.videoEl) {
-      this.videoEl.srcObject = this.stream;
-      // 自動再生を確実にするため muted + playsinline は HTML 側で指定済み
-      this.videoEl.play().catch((e) => console.warn('[sfu] 自動再生に失敗:', e.message));
+    // peer 単位で MediaStream を作る。映像と音声が別 producer で来るので、
+    // 同じ peer のトラックは同じ stream にまとめないと音がズレる。
+    let peer = this.peers.get(peerId);
+    if (!peer) {
+      peer = {
+        peerId,
+        displayName: displayName || peerId,
+        isIngest: source === 'ingest' || String(peerId).startsWith('ingest:'),
+        stream: new MediaStream(),
+        producerIds: new Set(),
+        hasAudio: false,
+      };
+      this.peers.set(peerId, peer);
     }
+    peer.stream.addTrack(consumer.track);
+    peer.producerIds.add(producerId);
+    if (consumer.kind === 'audio') peer.hasAudio = true;
 
-    // consume は paused で作られるので、貼り付けてから再開する
+    // consume は paused で作られるので、UI へ渡してから再開する
+    this.onPeerUpdate(peer);
     await this._emit('resumeConsumer', { consumerId: consumer.id });
-    this._setState('live', `${params.kind} 受信中`);
+
+    this._setState('live', `${this.peers.size} 人 / ${this.consumers.size} トラック`);
   }
 
-  _removeByProducer(producerId) {
-    const c = this.consumers.get(producerId);
-    if (!c) return;
-    this._detachTrack(c);
-    this.consumers.delete(producerId);
-    this._setState('waiting', 'カメラ送出が停止しました');
-  }
+  _removeProducer(producerId) {
+    const entry = this.consumers.get(producerId);
+    if (!entry) return;
+    const { consumer, peerId } = entry;
 
-  _removeConsumer(consumerId) {
-    for (const [pid, c] of this.consumers) {
-      if (c.id === consumerId) { this._removeByProducer(pid); return; }
+    const peer = this.peers.get(peerId);
+    if (peer) {
+      try { peer.stream.removeTrack(consumer.track); } catch (_) {}
+      peer.producerIds.delete(producerId);
     }
+    try { consumer.close(); } catch (_) {}
+    this.consumers.delete(producerId);
+
+    // その peer のトラックが全部消えたらタイルごと片付ける
+    if (peer && peer.producerIds.size === 0) {
+      this.peers.delete(peerId);
+      this.onPeerRemove(peerId);
+    } else if (peer) {
+      this.onPeerUpdate(peer);
+    }
+
+    if (this.peers.size === 0) this._setState('waiting', '映像待ち');
   }
 
-  _detachTrack(consumer) {
-    try {
-      if (this.stream) this.stream.removeTrack(consumer.track);
-      consumer.close();
-    } catch (_) {}
+  _removePeer(peerId) {
+    const peer = this.peers.get(peerId);
+    if (!peer) return;
+    for (const producerId of [...peer.producerIds]) {
+      const entry = this.consumers.get(producerId);
+      if (entry) { try { entry.consumer.close(); } catch (_) {} }
+      this.consumers.delete(producerId);
+    }
+    this.peers.delete(peerId);
+    this.onPeerRemove(peerId);
+    if (this.peers.size === 0) this._setState('waiting', '映像待ち');
   }
 
   _teardownMedia() {
-    for (const c of this.consumers.values()) this._detachTrack(c);
+    for (const { consumer } of this.consumers.values()) {
+      try { consumer.close(); } catch (_) {}
+    }
     this.consumers.clear();
+    for (const peerId of [...this.peers.keys()]) this.onPeerRemove(peerId);
+    this.peers.clear();
     try { this.recvTransport?.close(); } catch (_) {}
     this.recvTransport = null;
     this.device = null;
-    this.stream = null;
-    if (this.videoEl) this.videoEl.srcObject = null;
   }
 
   stop() {
-    this.stopped = true;
     this._teardownMedia();
     try { this.socket?.disconnect(); } catch (_) {}
     this.socket = null;
     this._setState('idle');
   }
 
+  getPeers() { return [...this.peers.values()]; }
+
   getStats() {
     return {
       state: this.state,
       hubUrl: this.opts.hubUrl,
       roomId: this.opts.roomId,
-      consumers: this.consumers.size,
+      peers: this.peers.size,
+      tracks: this.consumers.size,
       connected: Boolean(this.socket?.connected),
     };
   }
