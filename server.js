@@ -154,7 +154,9 @@ async function getOrCreateRoom(roomId) {
   }
   if (!rooms.has(roomId)) {
     const router = await worker.createRouter({ mediaCodecs: MEDIA_CODECS });
-    rooms.set(roomId, { router, peers: new Map() });
+    // ingests: PlainTransport 経由で外部から流し込まれた producer（カメラ等）。
+    // peer と違いソケットに紐づかないので、視聴者が全員抜けても部屋を消してはならない。
+    rooms.set(roomId, { router, peers: new Map(), ingests: new Map() });
     console.log(`[room] created: ${roomId}`);
   }
   return rooms.get(roomId);
@@ -226,6 +228,129 @@ async function main() {
     res.json({ running: botProcesses.has(req.params.roomId) });
   });
 
+  // ─── Camera ingest API (PlainTransport) ────────────────────────────────────
+  // 外部（秘書ダッシュボードの Flask + ffmpeg）から H.264 RTP を受け取り、
+  // 部屋の producer として全視聴者へ SFU 配信する。ブラウザを介さないので
+  // カメラ実機を持つホストが producer になれる。
+
+  async function stopIngest(roomId, name) {
+    const room = rooms.get(roomId);
+    const ing = room?.ingests.get(name);
+    if (!ing) return false;
+    try { ing.producer.close(); } catch (_) {}
+    try { ing.transport.close(); } catch (_) {}
+    room.ingests.delete(name);
+    if (io) io.to(roomId).emit('producerClosed', { producerId: ing.producer.id });
+    console.log(`[ingest] stopped: ${roomId}/${name}`);
+    return true;
+  }
+
+  app.post('/api/ingest/start', async (req, res) => {
+    try {
+      const {
+        roomId      = 'secretary-cam',
+        name        = 'webcam',
+        displayName = 'Webカメラ',
+        payloadType = 102,
+        ssrc        = 22222222,
+      } = req.body || {};
+
+      // 再実行は「張り直し」として扱う（ffmpeg 再起動時に呼ばれる）
+      await stopIngest(roomId, name);
+
+      const room = await getOrCreateRoom(roomId);
+
+      // comedia: true → 送信元の IP/ポートを最初に届いた RTP から学習する。
+      // これにより Flask 側は送信ポートを固定する必要がなく、NAT も気にしなくてよい。
+      const transport = await room.router.createPlainTransport({
+        listenInfo: { protocol: 'udp', ip: '0.0.0.0', announcedAddress: ANNOUNCED_IP },
+        rtcpMux: true,
+        comedia: true,
+      });
+
+      const producer = await transport.produce({
+        kind: 'video',
+        rtpParameters: {
+          mid: name,
+          codecs: [{
+            mimeType:    'video/H264',
+            payloadType,
+            clockRate:   90000,
+            parameters: {
+              'packetization-mode':      1,
+              'profile-level-id':        '640034',
+              'level-asymmetry-allowed': 1,
+            },
+            // PLI/FIR を有効にしておかないと、後から参加した視聴者が
+            // 次の IDR まで真っ黒のままになる
+            rtcpFeedback: [
+              { type: 'nack' },
+              { type: 'nack', parameter: 'pli' },
+              { type: 'ccm',  parameter: 'fir' },
+            ],
+          }],
+          encodings: [{ ssrc }],
+        },
+        appData: { source: 'ingest', name },
+      });
+
+      room.ingests.set(name, { transport, producer, displayName });
+
+      producer.observer.once('close', () => room.ingests.delete(name));
+
+      // 既に部屋にいる視聴者へ即通知（join 済みのブラウザが再読込なしで映る）
+      if (io) {
+        io.to(roomId).emit('newProducer', {
+          producerId:  producer.id,
+          peerId:      `ingest:${name}`,
+          displayName,
+          kind:        'video',
+          source:      'ingest',
+        });
+      }
+
+      const info = {
+        ok: true,
+        roomId, name,
+        producerId: producer.id,
+        // ffmpeg の送り先
+        ip:   ANNOUNCED_IP,
+        port: transport.tuple.localPort,
+        payloadType, ssrc,
+      };
+      console.log(`[ingest] started: ${roomId}/${name} → udp/${info.port} pt=${payloadType} ssrc=${ssrc}`);
+      res.json(info);
+    } catch (err) {
+      console.error('[ingest/start]', err);
+      res.status(500).json({ ok: false, error: err.message });
+    }
+  });
+
+  app.post('/api/ingest/stop', async (req, res) => {
+    const { roomId = 'secretary-cam', name = 'webcam' } = req.body || {};
+    const stopped = await stopIngest(roomId, name);
+    res.json({ ok: true, stopped });
+  });
+
+  app.get('/api/ingest/status', (_req, res) => {
+    const out = [];
+    for (const [roomId, room] of rooms) {
+      for (const [name, ing] of room.ingests) {
+        out.push({
+          roomId, name,
+          displayName: ing.displayName,
+          producerId:  ing.producer.id,
+          port:        ing.transport.tuple.localPort,
+          // comedia なので、RTP が届くまで remote は null のまま
+          receiving:   Boolean(ing.transport.tuple.remoteIp),
+          paused:      ing.producer.paused,
+          viewers:     room.peers.size,
+        });
+      }
+    }
+    res.json({ ok: true, ingests: out });
+  });
+
   app.use(express.static(path.join(__dirname, 'public')));
 
   const server = createServer(app);
@@ -249,7 +374,10 @@ async function main() {
       for (const t of peer.transports.values()) t.close();
       room.peers.delete(socket.id);
       socket.to(roomId).emit('peerLeft', { peerId: socket.id });
-      if (room.peers.size === 0) {
+      // カメラ等の ingest がある部屋は、視聴者がゼロになっても維持する。
+      // ここで router を閉じると ffmpeg からの RTP 流入先が消え、再接続のたびに
+      // Flask 側の配信を張り直す羽目になる。
+      if (room.peers.size === 0 && room.ingests.size === 0) {
         room.router.close();
         rooms.delete(roomId);
         console.log(`[room] removed: ${roomId}`);
@@ -279,6 +407,17 @@ async function main() {
           for (const [producerId, producer] of p.producers) {
             existingProducers.push({ producerId, peerId: pid, displayName: p.displayName, kind: producer.kind });
           }
+        }
+        // ingest（カメラ等）はソケットを持たないので peers ループでは拾えない。
+        // これを足さないと、後から入った視聴者にカメラ映像が見えない。
+        for (const [name, ing] of room.ingests) {
+          existingProducers.push({
+            producerId: ing.producer.id,
+            peerId: `ingest:${name}`,
+            displayName: ing.displayName,
+            kind: ing.producer.kind,
+            source: 'ingest',
+          });
         }
 
         console.log(`[join] "${peer.displayName}" → room "${roomId}"`);
