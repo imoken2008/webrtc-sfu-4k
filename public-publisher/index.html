@@ -1,0 +1,50 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>BRIO 送出 — 秘書ダッシュボード</title>
+<style>
+  :root { color-scheme: dark; }
+  body { margin:0; font-family:system-ui,"Noto Sans CJK JP",sans-serif;
+         background:#0d1017; color:#e6e6e6; }
+  header { padding:12px 16px; background:#161b26; border-bottom:1px solid #232a3a; }
+  header h1 { font-size:16px; margin:0; }
+  #status { font-size:14px; margin-top:4px; color:#8fd6ff; }
+  #info { font-size:12px; color:#8a93a6; margin-top:2px; }
+  main { display:flex; gap:12px; padding:12px 16px; flex-wrap:wrap; }
+  #preview { width:min(720px,100%); background:#000; border-radius:8px; aspect-ratio:16/9; }
+  .side { flex:1; min-width:280px; }
+  #stats { font-size:13px; background:#161b26; padding:10px 12px; border-radius:8px;
+           border:1px solid #232a3a; line-height:1.7; }
+  #log { font-size:11px; white-space:pre-wrap; background:#0a0d13; padding:10px 12px;
+         border-radius:8px; height:220px; overflow:auto; margin-top:10px;
+         border:1px solid #232a3a; color:#9aa4b6; }
+  .res-links a { display:inline-block; margin:6px 8px 0 0; padding:5px 12px;
+                 background:#232a3a; border-radius:6px; color:#cfe4ff; text-decoration:none; font-size:13px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>📹 BRIO → 秘書ダッシュボード SFU 送出</h1>
+  <div id="status">初期化中…</div>
+  <div id="info"></div>
+  <div class="res-links">
+    解像度切替:
+    <a href="?res=720">720p</a>
+    <a href="?res=1080">1080p</a>
+    <a href="?res=4k">4K</a>
+    <a href="?res=4k&codec=video/H264">4K(H264)</a>
+    <a href="?res=1080&codec=video/VP9">1080p(VP9)</a>
+  </div>
+</header>
+<main>
+  <video id="preview" autoplay playsinline muted></video>
+  <div class="side">
+    <div id="stats">送出統計を待機中…</div>
+    <div id="log"></div>
+  </div>
+</main>
+<script src="bundle.js"></script>
+</body>
+</html>

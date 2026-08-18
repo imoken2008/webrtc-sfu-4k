@@ -19,7 +19,7 @@ const { Device } = require('mediasoup-client');
 const { io } = require('socket.io-client');
 
 const DEFAULTS = {
-  hubUrl: 'http://192.168.0.9:8080',
+  hubUrl: 'http://sfu-hub.local:8080',   // DHCP で IP が変わるため mDNS 名で固定
   roomId: 'secretary-cam',
   displayName: 'dashboard',
 };
@@ -262,7 +262,9 @@ class SecretaryCam {
     );
   }
 
-  async publish({ video = true, audio = true } = {}) {
+  async publish({ video = true, audio = true,
+                  width, height, frameRate = 30, deviceId,
+                  maxBitrate, codecMime } = {}) {
     if (this.localStream) return this.localStream;      // 二重送出を防ぐ
     if (!this.canPublish()) {
       throw new Error(
@@ -274,8 +276,14 @@ class SecretaryCam {
       throw new Error('SFUハブに接続していません');
     }
 
+    const videoConstraints = video ? {
+      ...(deviceId ? { deviceId: { exact: deviceId } } : {}),
+      width:     { ideal: width  ?? 1280 },
+      height:    { ideal: height ?? 720 },
+      frameRate: { ideal: frameRate },
+    } : false;
     const stream = await navigator.mediaDevices.getUserMedia({
-      video: video ? { width: { ideal: 1280 }, height: { ideal: 720 } } : false,
+      video: videoConstraints,
       audio: audio ? { echoCancellation: true, noiseSuppression: true } : false,
     });
 
@@ -304,7 +312,23 @@ class SecretaryCam {
     this.localProducers = this.localProducers || [];
 
     for (const track of stream.getTracks()) {
-      const producer = await this.sendTransport.produce({ track });
+      const produceParams = { track };
+      if (track.kind === 'video') {
+        const s = track.getSettings();
+        const w = s.width || width || 1280;
+        // Pi 5 は HW エンコーダ非搭載でソフト符号化。解像度に応じてビットレート上限を設定
+        const bitrate = maxBitrate ??
+          (w >= 3840 ? 20_000_000 : w >= 1920 ? 6_000_000 : 2_500_000);
+        produceParams.encodings   = [{ maxBitrate: bitrate }];
+        produceParams.codecOptions = { videoGoogleStartBitrate: 1000 };
+        if (codecMime && this.device) {
+          const codec = this.device.rtpCapabilities.codecs.find(
+            (c) => c.kind === 'video' &&
+                   c.mimeType.toLowerCase() === codecMime.toLowerCase());
+          if (codec) produceParams.codec = codec;
+        }
+      }
+      const producer = await this.sendTransport.produce(produceParams);
       this.localProducers.push(producer);
     }
 
