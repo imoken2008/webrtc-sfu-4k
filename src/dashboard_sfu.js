@@ -359,39 +359,22 @@ class SecretaryCam {
 
   getPeers() { return [...this.peers.values()]; }
 
-  // ── ストリーム統計オーバーレイ（解像度 / FPS / 帯域）─────────────────
+  // ── カメラ映像タイルごとの統計バッジ（各 <video> の右上に小さく表示）──
   // 解像度と FPS は SFU サーバ側では取れない（mediasoup は復号しない）ため、
-  // ブラウザの RTCRtpSender/Receiver.getStats() から取得して画面右下に表示する。
+  // ブラウザの RTCRtpSender/Receiver.getStats() から取得し、対応する映像の
+  // 右上へ「解像度 fps 帯域」を重ねて表示する。
   _ensureStatsOverlay() {
     if (this._statsTimer) return;
     if (typeof document === 'undefined') return;
-    let el = document.getElementById('sfu-stats-overlay');
-    if (!el) {
-      el = document.createElement('div');
-      el.id = 'sfu-stats-overlay';
-      el.style.cssText =
-        'position:fixed;right:10px;bottom:10px;z-index:99999;max-width:360px;' +
-        'font:11px/1.5 ui-monospace,SFMono-Regular,Menlo,monospace;color:#e6e6e6;' +
-        'background:rgba(13,16,23,.9);border:1px solid #2b3346;border-radius:8px;' +
-        'padding:8px 10px;box-shadow:0 4px 14px rgba(0,0,0,.4);';
-      el.innerHTML =
-        '<div style="font-weight:600;margin-bottom:4px;display:flex;justify-content:space-between;gap:8px;">' +
-        '<span>\u{1F4CA} SFU ストリーム統計</span>' +
-        '<span id="sfu-stats-hide" style="cursor:pointer;opacity:.6;">✕</span></div>' +
-        '<div id="sfu-stats-body">計測中…</div>';
-      document.body.appendChild(el);
-      const hide = document.getElementById('sfu-stats-hide');
-      if (hide) hide.onclick = () => { el.remove(); if (this._statsTimer) { clearInterval(this._statsTimer); this._statsTimer = null; } };
-    }
     this._statsPrev = this._statsPrev || {};
-    this._statsTimer = setInterval(() => this._renderStatsOverlay(), 2000);
+    this._statsTimer = setInterval(() => this._renderPerTileStats(), 1500);
   }
 
   async _collectStreamStats() {
     const rows = [];
     const now = (typeof performance !== 'undefined' && performance.now) ? performance.now() : Date.now();
     this._statsPrev = this._statsPrev || {};
-    const scan = async (getStats, dir, label, id) => {
+    const scan = async (getStats, dir, streamObj, id) => {
       let report;
       try { report = await getStats(); } catch (_) { return; }
       report.forEach((r) => {
@@ -405,7 +388,7 @@ class SecretaryCam {
         if (prev && now > prev.t) kbps = Math.round((bytes - prev.bytes) * 8 / (now - prev.t));
         this._statsPrev[key] = { bytes, t: now };
         rows.push({
-          dir, label, kind,
+          stream: streamObj, dir, kind,
           w: r.frameWidth || null,
           h: r.frameHeight || null,
           fps: (r.framesPerSecond != null) ? Math.round(r.framesPerSecond) : null,
@@ -414,31 +397,61 @@ class SecretaryCam {
       });
     };
     for (const p of (this.localProducers || [])) {
-      await scan(() => p.getStats(), 'send', '自分(送出)', p.id);
+      await scan(() => p.getStats(), 'send', this.localStream, p.id);
     }
     for (const [pid, c] of this.consumers) {
       const peer = this.peers.get(c.peerId);
-      await scan(() => c.consumer.getStats(), 'recv', (peer && peer.displayName) || c.peerId, pid);
+      await scan(() => c.consumer.getStats(), 'recv', peer && peer.stream, pid);
     }
     return rows;
   }
 
-  async _renderStatsOverlay() {
-    const body = (typeof document !== 'undefined') && document.getElementById('sfu-stats-body');
-    if (!body) return;
+  _findVideoFor(stream) {
+    if (!stream || typeof document === 'undefined') return null;
+    const vids = document.querySelectorAll('video');
+    for (const v of vids) { if (v.srcObject === stream) return v; }
+    return null;
+  }
+
+  _badgeFor(video) {
+    const parent = video.parentElement || video;
+    let badge = parent.querySelector(':scope > .sfu-tile-stat');
+    if (!badge) {
+      try {
+        const cs = getComputedStyle(parent);
+        if (cs.position === 'static') parent.style.position = 'relative';
+      } catch (_) {}
+      badge = document.createElement('div');
+      badge.className = 'sfu-tile-stat';
+      badge.style.cssText =
+        'position:absolute;top:4px;right:4px;z-index:10;pointer-events:none;' +
+        'font:10px/1.3 ui-monospace,SFMono-Regular,Menlo,monospace;color:#fff;' +
+        'background:rgba(0,0,0,.58);border-radius:5px;padding:1px 6px;white-space:nowrap;' +
+        'letter-spacing:.2px;text-shadow:0 1px 1px rgba(0,0,0,.6);';
+      parent.appendChild(badge);
+    }
+    return badge;
+  }
+
+  async _renderPerTileStats() {
     const rows = await this._collectStreamStats();
-    if (!rows.length) { body.textContent = 'ストリームなし'; return; }
-    rows.sort((a, b) => (a.dir === b.dir ? (a.kind === 'video' ? -1 : 1) : (a.dir === 'send' ? -1 : 1)));
-    const line = (r) => {
-      const arrow = r.dir === 'send' ? '▲送' : '▼受';
-      const body = (r.kind === 'video')
-        ? `${r.w || '?'}×${r.h || '?'} ${r.fps != null ? r.fps + 'fps' : ''}`
-        : '\u{1F50A}音声';
-      return `<div>${arrow} <b>${r.label}</b> — ${body} — <b>${r.kbps}</b> kbps</div>`;
-    };
-    const total = rows.reduce((s, r) => s + (r.kbps || 0), 0);
-    body.innerHTML = rows.map(line).join('') +
-      `<div style="margin-top:4px;border-top:1px solid #2b3346;padding-top:3px;">合計 <b>${total}</b> kbps (${(total/1000).toFixed(2)} Mbps)</div>`;
+    const byStream = new Map();
+    for (const r of rows) {
+      if (!r.stream) continue;
+      let g = byStream.get(r.stream);
+      if (!g) { g = { w: null, h: null, fps: null, vKbps: 0, aKbps: 0 }; byStream.set(r.stream, g); }
+      if (r.kind === 'video') { g.w = r.w; g.h = r.h; g.fps = r.fps; g.vKbps = r.kbps; }
+      else { g.aKbps += r.kbps; }
+    }
+    for (const [stream, g] of byStream) {
+      const v = this._findVideoFor(stream);
+      if (!v) continue;
+      const badge = this._badgeFor(v);
+      const total = (g.vKbps || 0) + (g.aKbps || 0);
+      const res = (g.w && g.h) ? (g.w + '×' + g.h) : '–';
+      const fps = (g.fps != null) ? (' ' + g.fps + 'fps') : '';
+      badge.textContent = res + fps + '  ' + total + 'kbps';
+    }
   }
 
   getStats() {
