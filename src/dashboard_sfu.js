@@ -71,6 +71,7 @@ class SecretaryCam {
 
     this._setState('connecting', this.opts.hubUrl);
     this._ensureStatsOverlay();
+    this._ensureCameraPicker();
 
     this.socket = io(this.opts.hubUrl, {
       transports: ['websocket', 'polling'],
@@ -278,7 +279,7 @@ class SecretaryCam {
     }
 
     const videoConstraints = video ? {
-      ...(deviceId ? { deviceId: { exact: deviceId } } : {}),
+      ...((deviceId || this.selectedVideoDeviceId) ? { deviceId: { exact: deviceId || this.selectedVideoDeviceId } } : {}),
       width:     { ideal: width  ?? 1280 },
       height:    { ideal: height ?? 720 },
       frameRate: { ideal: frameRate },
@@ -287,6 +288,7 @@ class SecretaryCam {
       video: videoConstraints,
       audio: audio ? { echoCancellation: true, noiseSuppression: true } : false,
     });
+    try { this._refreshCameraList(); } catch (_) {}
 
     // 送信用トランスポートは受信用とは別に張る必要がある
     if (!this.sendTransport) {
@@ -518,6 +520,86 @@ class SecretaryCam {
       const v = ov.querySelector('video');
       if (v) v.srcObject = null;
       ov.remove();
+    }
+  }
+
+  // ── カメラ選択ピッカー（手元の複数カメラから選ぶ）─────────────────
+  _ensureCameraPicker() {
+    if (this._camPicker || typeof document === 'undefined') return;
+    const wrap = document.createElement('div');
+    wrap.id = 'sfu-cam-picker';
+    wrap.style.cssText =
+      'position:fixed;left:10px;bottom:10px;z-index:99999;display:flex;gap:6px;align-items:center;' +
+      'font:11px/1.4 system-ui,sans-serif;color:#e6e6e6;background:rgba(13,16,23,.9);' +
+      'border:1px solid #2b3346;border-radius:8px;padding:6px 8px;';
+    const label = document.createElement('span');
+    label.textContent = '\u{1F3A5}';
+    const sel = document.createElement('select');
+    sel.id = 'sfu-cam-select';
+    sel.style.cssText =
+      'background:#1a2130;color:#e6e6e6;border:1px solid #2b3346;border-radius:5px;' +
+      'padding:2px 4px;max-width:220px;font:11px system-ui,sans-serif;';
+    sel.onchange = () => this._onCameraChange(sel.value);
+    wrap.appendChild(label);
+    wrap.appendChild(sel);
+    document.body.appendChild(wrap);
+    this._camPicker = wrap;
+    this._refreshCameraList();
+    try {
+      navigator.mediaDevices.addEventListener('devicechange', () => this._refreshCameraList());
+    } catch (_) {}
+  }
+
+  async _refreshCameraList() {
+    const sel = (typeof document !== 'undefined') && document.getElementById('sfu-cam-select');
+    if (!sel) return;
+    let devices = [];
+    try { devices = await navigator.mediaDevices.enumerateDevices(); } catch (_) {}
+    const cams = devices.filter((d) => d.kind === 'videoinput' && d.deviceId);
+    const cur = this.selectedVideoDeviceId;
+    if (!cams.length) {
+      sel.innerHTML = '<option>カメラ許可後に一覧表示</option>';
+      return;
+    }
+    sel.innerHTML = '';
+    cams.forEach((c, i) => {
+      const o = document.createElement('option');
+      o.value = c.deviceId;
+      o.textContent = c.label || ('カメラ ' + (i + 1));
+      if (c.deviceId === cur) o.selected = true;
+      sel.appendChild(o);
+    });
+    if (!cur && cams[0]) this.selectedVideoDeviceId = cams[0].deviceId;
+  }
+
+  async _onCameraChange(deviceId) {
+    if (!deviceId) return;
+    this.selectedVideoDeviceId = deviceId;
+    // 送出中ならライブでカメラを差し替える（タイルはそのまま）
+    if (this.isPublishing && this.isPublishing()) {
+      try {
+        const vProd = (this.localProducers || []).find((p) => p.track && p.track.kind === 'video');
+        if (!vProd) return;
+        const cur = (vProd.track.getSettings && vProd.track.getSettings()) || {};
+        const ns = await navigator.mediaDevices.getUserMedia({
+          video: {
+            deviceId: { exact: deviceId },
+            width: { ideal: cur.width || 1280 },
+            height: { ideal: cur.height || 720 },
+            frameRate: { ideal: cur.frameRate || 30 },
+          },
+          audio: false,
+        });
+        const nt = ns.getVideoTracks()[0];
+        await vProd.replaceTrack({ track: nt });
+        if (this.localStream) {
+          this.localStream.getVideoTracks().forEach((t) => { this.localStream.removeTrack(t); t.stop(); });
+          this.localStream.addTrack(nt);
+        }
+        this._setState(this.state, 'カメラを切り替えました');
+      } catch (e) {
+        this._setState('error', 'カメラ切替に失敗: ' + e.message);
+      }
     }
   }
 
