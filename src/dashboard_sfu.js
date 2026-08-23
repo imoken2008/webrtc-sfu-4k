@@ -451,7 +451,8 @@ class SecretaryCam {
       const total = (g.vKbps || 0) + (g.aKbps || 0);
       const res = (g.w && g.h) ? (g.w + '×' + g.h) : '–';
       const fps = (g.fps != null) ? (' ' + g.fps + 'fps') : '';
-      badge.textContent = res + fps + '  ' + total + 'kbps';
+      const bw = total >= 1000 ? (total / 1000).toFixed(1) + 'Mbps' : total + 'kbps';
+      badge.textContent = res + fps + '  ' + bw;
     }
   }
 
