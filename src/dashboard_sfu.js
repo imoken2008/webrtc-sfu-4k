@@ -461,7 +461,8 @@ class SecretaryCam {
       if (g.dir === 'send' && g.qlr && g.qlr !== 'none') {
         lim = g.qlr === 'cpu' ? '  ⚠CPU制限' : (g.qlr === 'bandwidth' ? '  ⚠帯域制限' : '  ⚠' + g.qlr);
       }
-      badge.textContent = res + fps + '  ' + bw + lim;
+      const encTag = (g.dir === 'send' && g.enc) ? '  [' + String(g.enc).replace(/ .*/, '') + ']' : '';
+      badge.textContent = res + fps + '  ' + bw + lim + encTag;
       if (g.dir === 'send' && g.qld) {
         const d = g.qld;
         badge.title = `品質制限の累積: 帯域 ${(d.bandwidth||0).toFixed(1)}s / CPU ${(d.cpu||0).toFixed(1)}s / なし ${(d.none||0).toFixed(1)}s` +
