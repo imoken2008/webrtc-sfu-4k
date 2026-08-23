@@ -70,6 +70,7 @@ class SecretaryCam {
     this.onPeerRemove = this.opts.onPeerRemove || (() => {});
 
     this._setState('connecting', this.opts.hubUrl);
+    this._ensureStatsOverlay();
 
     this.socket = io(this.opts.hubUrl, {
       transports: ['websocket', 'polling'],
@@ -357,6 +358,88 @@ class SecretaryCam {
   isPublishing() { return Boolean(this.localStream); }
 
   getPeers() { return [...this.peers.values()]; }
+
+  // ── ストリーム統計オーバーレイ（解像度 / FPS / 帯域）─────────────────
+  // 解像度と FPS は SFU サーバ側では取れない（mediasoup は復号しない）ため、
+  // ブラウザの RTCRtpSender/Receiver.getStats() から取得して画面右下に表示する。
+  _ensureStatsOverlay() {
+    if (this._statsTimer) return;
+    if (typeof document === 'undefined') return;
+    let el = document.getElementById('sfu-stats-overlay');
+    if (!el) {
+      el = document.createElement('div');
+      el.id = 'sfu-stats-overlay';
+      el.style.cssText =
+        'position:fixed;right:10px;bottom:10px;z-index:99999;max-width:360px;' +
+        'font:11px/1.5 ui-monospace,SFMono-Regular,Menlo,monospace;color:#e6e6e6;' +
+        'background:rgba(13,16,23,.9);border:1px solid #2b3346;border-radius:8px;' +
+        'padding:8px 10px;box-shadow:0 4px 14px rgba(0,0,0,.4);';
+      el.innerHTML =
+        '<div style="font-weight:600;margin-bottom:4px;display:flex;justify-content:space-between;gap:8px;">' +
+        '<span>\u{1F4CA} SFU ストリーム統計</span>' +
+        '<span id="sfu-stats-hide" style="cursor:pointer;opacity:.6;">✕</span></div>' +
+        '<div id="sfu-stats-body">計測中…</div>';
+      document.body.appendChild(el);
+      const hide = document.getElementById('sfu-stats-hide');
+      if (hide) hide.onclick = () => { el.remove(); if (this._statsTimer) { clearInterval(this._statsTimer); this._statsTimer = null; } };
+    }
+    this._statsPrev = this._statsPrev || {};
+    this._statsTimer = setInterval(() => this._renderStatsOverlay(), 2000);
+  }
+
+  async _collectStreamStats() {
+    const rows = [];
+    const now = (typeof performance !== 'undefined' && performance.now) ? performance.now() : Date.now();
+    this._statsPrev = this._statsPrev || {};
+    const scan = async (getStats, dir, label, id) => {
+      let report;
+      try { report = await getStats(); } catch (_) { return; }
+      report.forEach((r) => {
+        if (r.type !== 'outbound-rtp' && r.type !== 'inbound-rtp') return;
+        if (r.isRemote) return;
+        const kind = r.kind || r.mediaType;
+        const bytes = (r.bytesSent != null ? r.bytesSent : r.bytesReceived) || 0;
+        const key = dir + '|' + id + '|' + kind;
+        const prev = this._statsPrev[key];
+        let kbps = 0;
+        if (prev && now > prev.t) kbps = Math.round((bytes - prev.bytes) * 8 / (now - prev.t));
+        this._statsPrev[key] = { bytes, t: now };
+        rows.push({
+          dir, label, kind,
+          w: r.frameWidth || null,
+          h: r.frameHeight || null,
+          fps: (r.framesPerSecond != null) ? Math.round(r.framesPerSecond) : null,
+          kbps: kbps < 0 ? 0 : kbps,
+        });
+      });
+    };
+    for (const p of (this.localProducers || [])) {
+      await scan(() => p.getStats(), 'send', '自分(送出)', p.id);
+    }
+    for (const [pid, c] of this.consumers) {
+      const peer = this.peers.get(c.peerId);
+      await scan(() => c.consumer.getStats(), 'recv', (peer && peer.displayName) || c.peerId, pid);
+    }
+    return rows;
+  }
+
+  async _renderStatsOverlay() {
+    const body = (typeof document !== 'undefined') && document.getElementById('sfu-stats-body');
+    if (!body) return;
+    const rows = await this._collectStreamStats();
+    if (!rows.length) { body.textContent = 'ストリームなし'; return; }
+    rows.sort((a, b) => (a.dir === b.dir ? (a.kind === 'video' ? -1 : 1) : (a.dir === 'send' ? -1 : 1)));
+    const line = (r) => {
+      const arrow = r.dir === 'send' ? '▲送' : '▼受';
+      const body = (r.kind === 'video')
+        ? `${r.w || '?'}×${r.h || '?'} ${r.fps != null ? r.fps + 'fps' : ''}`
+        : '\u{1F50A}音声';
+      return `<div>${arrow} <b>${r.label}</b> — ${body} — <b>${r.kbps}</b> kbps</div>`;
+    };
+    const total = rows.reduce((s, r) => s + (r.kbps || 0), 0);
+    body.innerHTML = rows.map(line).join('') +
+      `<div style="margin-top:4px;border-top:1px solid #2b3346;padding-top:3px;">合計 <b>${total}</b> kbps (${(total/1000).toFixed(2)} Mbps)</div>`;
+  }
 
   getStats() {
     return {
