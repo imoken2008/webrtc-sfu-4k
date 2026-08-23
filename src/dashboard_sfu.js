@@ -393,6 +393,9 @@ class SecretaryCam {
           h: r.frameHeight || null,
           fps: (r.framesPerSecond != null) ? Math.round(r.framesPerSecond) : null,
           kbps: kbps < 0 ? 0 : kbps,
+          qlr: r.qualityLimitationReason || null,           // 'bandwidth' | 'cpu' | 'none'
+          qld: r.qualityLimitationDurations || null,        // 各制限の累積秒
+          enc: r.encoderImplementation || null,
         });
       });
     };
@@ -440,8 +443,10 @@ class SecretaryCam {
       if (!r.stream) continue;
       let g = byStream.get(r.stream);
       if (!g) { g = { w: null, h: null, fps: null, vKbps: 0, aKbps: 0 }; byStream.set(r.stream, g); }
-      if (r.kind === 'video') { g.w = r.w; g.h = r.h; g.fps = r.fps; g.vKbps = r.kbps; }
-      else { g.aKbps += r.kbps; }
+      if (r.kind === 'video') {
+        g.w = r.w; g.h = r.h; g.fps = r.fps; g.vKbps = r.kbps;
+        g.dir = r.dir; g.qlr = r.qlr; g.qld = r.qld; g.enc = r.enc;
+      } else { g.aKbps += r.kbps; }
     }
     for (const [stream, g] of byStream) {
       const v = this._findVideoFor(stream);
@@ -452,7 +457,16 @@ class SecretaryCam {
       const res = (g.w && g.h) ? (g.w + '×' + g.h) : '–';
       const fps = (g.fps != null) ? (' ' + g.fps + 'fps') : '';
       const bw = total >= 1000 ? (total / 1000).toFixed(1) + 'Mbps' : total + 'kbps';
-      badge.textContent = res + fps + '  ' + bw;
+      let lim = '';
+      if (g.dir === 'send' && g.qlr && g.qlr !== 'none') {
+        lim = g.qlr === 'cpu' ? '  ⚠CPU制限' : (g.qlr === 'bandwidth' ? '  ⚠帯域制限' : '  ⚠' + g.qlr);
+      }
+      badge.textContent = res + fps + '  ' + bw + lim;
+      if (g.dir === 'send' && g.qld) {
+        const d = g.qld;
+        badge.title = `品質制限の累積: 帯域 ${(d.bandwidth||0).toFixed(1)}s / CPU ${(d.cpu||0).toFixed(1)}s / なし ${(d.none||0).toFixed(1)}s` +
+          (g.enc ? `  encoder=${g.enc}` : '');
+      }
     }
   }
 
