@@ -446,11 +446,62 @@ class SecretaryCam {
     for (const [stream, g] of byStream) {
       const v = this._findVideoFor(stream);
       if (!v) continue;
+      this._makeMaximizable(v);
       const badge = this._badgeFor(v);
       const total = (g.vKbps || 0) + (g.aKbps || 0);
       const res = (g.w && g.h) ? (g.w + '×' + g.h) : '–';
       const fps = (g.fps != null) ? (' ' + g.fps + 'fps') : '';
       badge.textContent = res + fps + '  ' + total + 'kbps';
+    }
+  }
+
+  // ── カメラ映像タイルのクリック最大化 ────────────────────────────────
+  _makeMaximizable(video) {
+    if (!video || video.dataset.sfuMax === '1') return;
+    video.dataset.sfuMax = '1';
+    video.style.cursor = 'zoom-in';
+    if (!video.title) video.title = 'クリックで最大化';
+    video.addEventListener('click', () => this._openMaximize(video.srcObject));
+  }
+
+  _openMaximize(stream) {
+    if (!stream || typeof document === 'undefined') return;
+    this._closeMaximize();
+    const ov = document.createElement('div');
+    ov.id = 'sfu-max-overlay';
+    ov.style.cssText =
+      'position:fixed;inset:0;z-index:100000;background:rgba(0,0,0,.92);' +
+      'display:flex;align-items:center;justify-content:center;cursor:zoom-out;';
+    const v = document.createElement('video');
+    v.autoplay = true; v.playsInline = true; v.muted = true; // 音は元タイルから鳴らす（二重音防止）
+    v.srcObject = stream;
+    v.style.cssText =
+      'max-width:96vw;max-height:92vh;width:auto;height:auto;object-fit:contain;' +
+      'border-radius:6px;box-shadow:0 10px 44px rgba(0,0,0,.6);background:#000;';
+    const close = document.createElement('div');
+    close.textContent = '✕';
+    close.style.cssText =
+      'position:absolute;top:12px;right:18px;color:#fff;font:600 24px/1 system-ui,sans-serif;' +
+      'cursor:pointer;opacity:.85;text-shadow:0 1px 3px rgba(0,0,0,.7);';
+    close.onclick = (e) => { e.stopPropagation(); this._closeMaximize(); };
+    ov.appendChild(v);
+    ov.appendChild(close);
+    ov.addEventListener('click', () => this._closeMaximize()); // 背景/映像クリックで閉じる
+    document.body.appendChild(ov);
+    if (v.play) { try { v.play(); } catch (_) {} }
+    if (!this._maxEsc) {
+      this._maxEsc = (e) => { if (e.key === 'Escape') this._closeMaximize(); };
+      document.addEventListener('keydown', this._maxEsc);
+    }
+  }
+
+  _closeMaximize() {
+    if (typeof document === 'undefined') return;
+    const ov = document.getElementById('sfu-max-overlay');
+    if (ov) {
+      const v = ov.querySelector('video');
+      if (v) v.srcObject = null;
+      ov.remove();
     }
   }
 
