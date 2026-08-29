@@ -81,3 +81,48 @@ HDMI ソースが繋がっていないとキャプチャに失敗する。
 `Environment=` にスペースを含む値を書くときは**クォートが必須**。
 `Environment=SFU_DISPLAY_NAME=Cam Link 4K` は "Cam" で切れる。
 `Environment="SFU_DISPLAY_NAME=Cam Link 4K"` と書くこと。
+
+## 4K を送るときの必須事項
+
+- **router に High profile (640034) の宣言が要る**。ブラウザのHWデコーダは 4K では
+  High を前提にしているものが多く、**Constrained Baseline の 4K は黒画面**になる。
+  server.js は H264 を2つ宣言している（High 5.2 / Baseline 3.1）。ingest は
+  プロファイルの高い方を自動選択し、payloadType も router の割当に追従する
+- **Level にも注意**。42e01f は Level 3.1 で規格上 1280x720@30 まで。4K を流すなら
+  Level 5.1 以上（例: 640034 = High 5.2）
+
+## デバイスパスは by-id を使う
+
+`/dev/videoN` の番号は USB 再列挙で入れ替わる（実際に Cam Link が video0→video1 に
+ずれて配信が止まった）。シリアル番号ベースの固定パスを使うこと:
+
+```
+/dev/v4l/by-id/usb-Elgato_Cam_Link_4K_XXXXXXXXXXX-video-index0
+```
+
+`index1` はメタデータ用で映像は取れない。`index0` を使う。
+
+## nvv4l2h264enc の assertion は無害
+
+`gst_buffer_resize_range: assertion 'bufmax >= bufoffs + offset + size' failed` が
+毎秒数回出るが、**解像度に関係なく出る**（1080p でも 4K でも同じ回数）NVIDIA
+プラグインのノイズで、映像は正常に流れる。切り分けた結果:
+
+| 構成 | assertion |
+|---|---|
+| キャプチャのみ | 0 |
+| +nvvidconv | 0 |
+| +NVENC (4K) | 401 |
+| +NVENC (1080p) | 403 |
+
+## リソース監視 (jtop)
+
+```
+sudo pip3 install -U jetson-stats
+sudo jtop --install-service
+sudo groupadd jtop && sudo usermod -aG jtop $USER   # 自動作成されない
+sudo systemctl restart jtop
+jtop
+```
+NVENC/NVDEC/VIC の稼働状況が見える。GPU(GR3D) が 0% のまま NVENC が
+499MHz で回っていれば、専用ハードウェアでエンコードできている証拠。
