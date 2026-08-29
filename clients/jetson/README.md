@@ -58,3 +58,26 @@ journalctl -u jetson-sfu -f
   ```
 - **カメラは USB 3.0 側に挿す**。ハブ多段(4段)にぶら下げると給電が不安定で
   繰り返し切断される
+
+## Cam Link 4K (HDMIキャプチャ) を使う場合
+
+Cam Link 4K は **3840x2160@30 の raw のみ**を出す（MJPEG も低解像度も選べない）。
+そのため:
+
+- `videoconvert` を通さないこと。4K の CPU 変換は全く間に合わない。
+  raw は `nvvidconv` が直接受けられる
+- `OUT_WIDTH`/`OUT_HEIGHT` でハードウェア縮小してから送出する。
+  4K のまま送ると、ハブ(Pi 3 / 100Mbps)が視聴者数ぶんを捌けない
+
+```
+CAM_DEVICE=/dev/video0 CAM_WIDTH=3840 CAM_HEIGHT=2160 CAM_FPS=30 \
+OUT_WIDTH=1920 OUT_HEIGHT=1080 CAM_BITRATE=6000000 ./stream_to_sfu.py
+```
+
+HDMI ソースが繋がっていないとキャプチャに失敗する。
+
+## systemd の落とし穴
+
+`Environment=` にスペースを含む値を書くときは**クォートが必須**。
+`Environment=SFU_DISPLAY_NAME=Cam Link 4K` は "Cam" で切れる。
+`Environment="SFU_DISPLAY_NAME=Cam Link 4K"` と書くこと。

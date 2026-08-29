@@ -26,6 +26,13 @@ FPS     = int(os.environ.get("CAM_FPS", "30"))
 # ハブ(Pi 3)の Ethernet が 100Mbps 上限で、視聴者数ぶん出ていく。
 # ここを上げるとハブ側の帯域が先に飽和する。
 BITRATE = int(os.environ.get("CAM_BITRATE", "4000000"))
+# 送出解像度。未指定ならキャプチャ解像度のまま。
+# Cam Link のようにキャプチャが4K固定の機器では、ここで縮小して
+# ハブ(Pi 3 / 100Mbps)の帯域に見合ったサイズにする。
+OUT_W = int(os.environ.get("OUT_WIDTH", str(WIDTH)))
+OUT_H = int(os.environ.get("OUT_HEIGHT", str(HEIGHT)))
+# raw のピクセル形式（機器が NV12 と I420 の両方を出す場合の指定）
+RAW_FMT = os.environ.get("CAM_RAW_FORMAT", "NV12")
 
 # router の profile-level-id → nvv4l2h264enc の profile 値
 # 42=Constrained Baseline, 4d=Main, 64=High
@@ -81,21 +88,24 @@ def main():
     log(f"プロファイル: {pli} → {prof_name} (profile={prof_val})")
 
     mjpeg = camera_supports_mjpeg(DEV)
-    log(f"入力: {'MJPEG' if mjpeg else 'raw'} {WIDTH}x{HEIGHT}@{FPS}")
+    scale = "" if (OUT_W, OUT_H) == (WIDTH, HEIGHT) else f" → {OUT_W}x{OUT_H} に縮小"
+    log(f"入力: {'MJPEG' if mjpeg else 'raw ' + RAW_FMT} {WIDTH}x{HEIGHT}@{FPS}{scale}")
 
     if mjpeg:
+        # MJPEG はデコード後に videoconvert が要る
         src = [f"v4l2src device={DEV} io-mode=2", "!",
                f"image/jpeg,width={WIDTH},height={HEIGHT},framerate={FPS}/1", "!",
                "jpegdec", "!", "videoconvert"]
     else:
+        # raw は nvvidconv が直接受けられる。4K で videoconvert を挟むと
+        # CPU 変換になって全く間に合わないので通さないこと。
         src = [f"v4l2src device={DEV} io-mode=2", "!",
-               f"video/x-raw,width={WIDTH},height={HEIGHT},framerate={FPS}/1", "!",
-               "videoconvert"]
+               f"video/x-raw,format={RAW_FMT},width={WIDTH},height={HEIGHT},framerate={FPS}/1"]
 
     gop = FPS * 2
     pipeline = src + [
         "!", "nvvidconv",
-        "!", "video/x-raw(memory:NVMM),format=NV12",
+        "!", f"video/x-raw(memory:NVMM),format=NV12,width={OUT_W},height={OUT_H}",
         "!", "nvv4l2h264enc",
         f"bitrate={BITRATE}",
         f"profile={prof_val}",

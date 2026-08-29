@@ -8,20 +8,24 @@ Type=simple
 User=imoken
 Environment=SFU_HUB_URL=http://sfu-hub.local:8080
 Environment=SFU_ROOM_ID=secretary-cam
-Environment=SFU_INGEST_NAME=jetson
-Environment=SFU_DISPLAY_NAME=Jetson Xavier NX
-Environment=CAM_DEVICE=/dev/video2
-Environment=CAM_WIDTH=1280
-Environment=CAM_HEIGHT=720
-Environment=CAM_FPS=30
-Environment=CAM_BITRATE=4000000
-ExecStart=/home/imoken/stream_to_sfu.py
+Environment=SFU_INGEST_NAME=camlink
+Environment="SFU_DISPLAY_NAME=Cam Link 4K"
 
-# ハブを再起動すると PlainTransport が消えるので、ingest 要求からやり直す。
-# カメラの抜き差しやUSBの再列挙でも自動復帰させる。
+# Cam Link 4K は 3840x2160@30 の raw のみ。低解像度もMJPEGも選べない。
+# 4Kで取り込み、nvvidconv(ハードウェア)で縮小してから送出する。
+# ここを4Kのまま送ると、ハブ(Pi 3 / 100Mbps)が視聴者数ぶんを捌けない。
+Environment=CAM_DEVICE=/dev/video0
+Environment=CAM_WIDTH=3840
+Environment=CAM_HEIGHT=2160
+Environment=CAM_FPS=30
+Environment=CAM_RAW_FORMAT=NV12
+Environment=OUT_WIDTH=1920
+Environment=OUT_HEIGHT=1080
+Environment=CAM_BITRATE=6000000
+
+ExecStart=/home/imoken/stream_to_sfu.py
 Restart=always
 RestartSec=5
-
 StandardOutput=journal
 StandardError=journal
 SyslogIdentifier=jetson-sfu
