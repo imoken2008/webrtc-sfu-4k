@@ -1,0 +1,22 @@
+[Unit]
+Description=mediasoup SFU hub (Raspberry Pi 5)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=pi
+WorkingDirectory=/home/pi/sfu-hub
+Environment=NODE_ENV=production
+Environment=PORT=8080
+Environment=RTC_PORT=10000
+Environment=HTTPS_PORT=8443
+ExecStart=/home/pi/sfu-hub/start.sh
+Restart=always
+RestartSec=3
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=sfu-hub
+
+[Install]
+WantedBy=multi-user.target
