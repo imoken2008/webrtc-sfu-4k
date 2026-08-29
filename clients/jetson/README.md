@@ -39,7 +39,7 @@ journalctl -u jetson-sfu -f
 
 - `insert-sps-pps=1` と `config-interval=1` は必須。これが無いと後から入った
   視聴者が SPS/PPS を受け取れず、映像が出ない
-- `profile=4` (High) にすること。mediasoup 側が `profile-level-id=640034`
-  (High 5.2) を宣言しているため、Baseline で送ると宣言と実体がずれる
+- エンコーダのプロファイルは ingest API が返す `profileLevelId` から自動決定する。
+  直書きしてはいけない（router 側を変更したとき `unsupported codec` で壊れる）
 - ハブを再起動すると PlainTransport が消える。`Restart=always` で
   ingest 要求からやり直させている

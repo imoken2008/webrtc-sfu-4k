@@ -71,7 +71,10 @@ const MEDIA_CODECS = [
     clockRate: 90000,
     parameters: {
       'packetization-mode': 1,
-      'profile-level-id': '640034',
+      // 42e01f = Constrained Baseline 3.1。WebRTC で最も互換性が高く、
+      // ブラウザからの送出(getUserMedia→produce)が確実に通る。
+      // High 5.2 (640034) は一部ブラウザが受け付けないため使わない。
+      'profile-level-id': '42e01f',
       'level-asymmetry-allowed': 1,
     },
   },
@@ -271,6 +274,14 @@ async function main() {
         comedia: true,
       });
 
+      // router が実際に持っている H264 の定義をそのまま使う。
+      // ここにパラメータを直書きすると、router 側の profile-level-id を
+      // 変更したときに produce が "unsupported codec" で落ちる。
+      const routerH264 = room.router.rtpCapabilities.codecs.find(
+        (c) => c.mimeType.toLowerCase() === 'video/h264'
+      );
+      if (!routerH264) throw new Error('router が H264 を持っていません');
+
       const producer = await transport.produce({
         kind: 'video',
         rtpParameters: {
@@ -280,8 +291,8 @@ async function main() {
             payloadType,
             clockRate:   90000,
             parameters: {
+              ...routerH264.parameters,
               'packetization-mode':      1,
-              'profile-level-id':        '640034',
               'level-asymmetry-allowed': 1,
             },
             // PLI/FIR を有効にしておかないと、後から参加した視聴者が
@@ -316,10 +327,13 @@ async function main() {
         ok: true,
         roomId, name,
         producerId: producer.id,
-        // ffmpeg の送り先
+        // ffmpeg / GStreamer の送り先
         ip:   ANNOUNCED_IP,
         port: transport.tuple.localPort,
         payloadType, ssrc,
+        // 送信側のエンコーダはこのプロファイルに合わせること。
+        // 42e01f=Constrained Baseline 3.1 / 640034=High 5.2
+        profileLevelId: routerH264.parameters?.['profile-level-id'] ?? null,
       };
       console.log(`[ingest] started: ${roomId}/${name} → udp/${info.port} pt=${payloadType} ssrc=${ssrc}`);
       res.json(info);

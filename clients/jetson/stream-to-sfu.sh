@@ -36,7 +36,19 @@ IP=$(echo "$RESP"   | jq -r '.ip')
 PORT=$(echo "$RESP" | jq -r '.port')
 PT=$(echo "$RESP"   | jq -r '.payloadType')
 SSRC=$(echo "$RESP" | jq -r '.ssrc')
+PLI=$(echo "$RESP"  | jq -r '.profileLevelId // "42e01f"')
+
+# エンコーダのプロファイルは router の宣言に合わせる。ここがずれると
+# produce が "unsupported codec" で弾かれる（実際に一度それで壊れた）。
+# nvv4l2h264enc: 0=Baseline 2=Main 4=High
+case "$PLI" in
+  42*) ENC_PROFILE=0; PROFILE_NAME="Constrained Baseline" ;;
+  4d*) ENC_PROFILE=2; PROFILE_NAME="Main" ;;
+  64*) ENC_PROFILE=4; PROFILE_NAME="High" ;;
+  *)   ENC_PROFILE=0; PROFILE_NAME="Baseline(既定)" ;;
+esac
 log "送り先: $IP:$PORT  pt=$PT ssrc=$SSRC"
+log "プロファイル: $PLI → $PROFILE_NAME (nvv4l2h264enc profile=$ENC_PROFILE)"
 
 # カメラが MJPEG を出すか生の YUY2 かで前段が変わるので自動判定する
 if v4l2-ctl -d "$DEV" --list-formats 2>/dev/null | grep -qi "MJPG"; then
@@ -47,8 +59,7 @@ else
   SRC="v4l2src device=$DEV io-mode=2 ! video/x-raw,width=$W,height=$H,framerate=$FPS/1 ! videoconvert"
 fi
 
-# profile=4 は High。mediasoup 側が profile-level-id=640034(High 5.2) を
-# 宣言しているので、ここを Baseline にすると宣言と実体がずれる。
+# profile は上で router の宣言から決めている。直書きしてはいけない。
 # insert-sps-pps=1 が無いと、後から入った視聴者が SPS/PPS を受け取れず映らない。
 exec gst-launch-1.0 -e \
   $SRC \
@@ -56,7 +67,7 @@ exec gst-launch-1.0 -e \
   ! 'video/x-raw(memory:NVMM),format=NV12' \
   ! nvv4l2h264enc \
       bitrate="$BITRATE" \
-      profile=4 \
+      profile="$ENC_PROFILE" \
       insert-sps-pps=1 \
       iframeinterval="$((FPS * 2))" \
       idrinterval="$((FPS * 2))" \
