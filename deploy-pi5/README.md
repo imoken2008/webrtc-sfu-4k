@@ -87,3 +87,19 @@ gst-launch は気づかず送り続ける**（プロセスが終了しないた�
 `stream_to_sfu.py` が `HEALTH_INTERVAL`（既定20秒）ごとに
 `/api/ingest/status` を見て、自分の ingest が消えていたら終了 → systemd が
 再起動 → ingest を張り直す。実測でハブ再起動から40秒以内に復帰を確認。
+
+## mDNS は有線だけ広告させる
+
+Pi 5 は有線と無線の両方を持つため、既定では **avahi が両方を広告し
+`pi5.local` の解決先が揺れる**（実測: .16(無線) を返したり .10(有線) を返したり）。
+SFU が広告する ANNOUNCED_IP は有線なので、名前で引くとシグナリングとメディアが
+別経路になりうる。
+
+`/etc/avahi/avahi-daemon.conf`:
+```
+allow-interfaces=eth0
+```
+`sudo systemctl restart avahi-daemon` で反映。以後 `pi5.local` は常に有線 IP。
+
+**注意**: 有線を抜くと `pi5.local` が引けなくなる。無線運用に戻すときは
+この行を `allow-interfaces=eth0,wlan0` にするか、コメントアウトする。
