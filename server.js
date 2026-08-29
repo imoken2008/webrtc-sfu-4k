@@ -200,7 +200,16 @@ async function main() {
   app.get('/ping', (_req, res) => res.json({ ok: true }));
   app.get('/health', (_req, res) => {
     const workerAlive = worker && !worker.closed;
-    res.status(workerAlive ? 200 : 503).json({ ok: workerAlive, workerPid: worker?.pid ?? null });
+    res.status(workerAlive ? 200 : 503).json({
+      ok: workerAlive,
+      workerPid: worker?.pid ?? null,
+      // 自分がメディア用に広告しているアドレス。ホストが複数のインターフェースを
+      // 持つと mDNS はどちらを返すか一定しないため、ハブ自身を権威にする。
+      // クライアントはこれを使えば、シグナリングとメディアの経路が必ず一致する。
+      announcedIp: ANNOUNCED_IP,
+      httpPort: PORT,
+      httpsPort: HTTPS_PORT,
+    });
   });
 
   // ─── Bot API ───────────────────────────────────────────────────────────────

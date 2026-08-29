@@ -61,3 +61,29 @@ ANNOUNCED_IP に選ぶので、**LAN ケーブルを挿して再起動するだ�
 2. `https://<dashboard>:5443/dashboard` ← ダッシュボード
 
 承認済みなら HTTP 版と同じく 4K が描画される（実測確認済み）。
+
+## 有線化の結果（2026-08-30）
+
+LAN ケーブルを挿すと **eth0 が 1000Mbps full duplex** で上がる（Pi 3 の 10倍）。
+`start.sh` が自動で eth0 を ANNOUNCED_IP に選ぶので、**サービス再起動だけで切替**。
+
+```
+[sfu-hub start] ANNOUNCED_IP=192.168.0.10 (有線 1000Mbps)
+```
+
+**Pi 5 は有線と無線で別 IP を持ち、mDNS は両方を広告する**。
+`pi5.local` の解決結果は呼び出しごとに揺れる（実測: Jetson は .10、Flask は .16 を得た）。
+シグナリングとメディアで別経路になるのを避けるため、**ハブ自身を権威にする**:
+
+- `/health` が `announcedIp` を返す
+- ダッシュボードはそれを最優先で使い、取れなければ通常の名前解決へフォールバック
+
+## ハブ再起動時の自動復帰
+
+ハブを再起動すると PlainTransport が消えるが、**UDP 送出は fire-and-forget なので
+gst-launch は気づかず送り続ける**（プロセスが終了しないため systemd の
+`Restart=always` も効かない）。
+
+`stream_to_sfu.py` が `HEALTH_INTERVAL`（既定20秒）ごとに
+`/api/ingest/status` を見て、自分の ingest が消えていたら終了 → systemd が
+再起動 → ingest を張り直す。実測でハブ再起動から40秒以内に復帰を確認。

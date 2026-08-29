@@ -12,6 +12,7 @@ import os
 import re
 import subprocess
 import sys
+import time
 import urllib.request
 
 HUB   = os.environ.get("SFU_HUB_URL", "http://sfu-hub.local:8080").rstrip("/")
@@ -37,6 +38,21 @@ RAW_FMT = os.environ.get("CAM_RAW_FORMAT", "NV12")
 # router の profile-level-id → nvv4l2h264enc の profile 値
 # 42=Constrained Baseline, 4d=Main, 64=High
 ENC_PROFILE = {"42": (0, "Constrained Baseline"), "4d": (2, "Main"), "64": (4, "High")}
+
+# ハブ側の ingest 生存確認の間隔（秒）
+HEALTH_INTERVAL = int(os.environ.get("HEALTH_INTERVAL", "20"))
+
+
+def ingest_alive() -> bool:
+    """ハブに自分の ingest がまだ登録されているか"""
+    try:
+        with urllib.request.urlopen(f"{HUB}/api/ingest/status", timeout=6) as r:
+            data = json.loads(r.read().decode())
+        return any(x.get("name") == NAME and x.get("roomId") == ROOM
+                   for x in data.get("ingests", []))
+    except Exception:
+        # ハブに繋がらない時は「消えた」と判断して張り直させる
+        return False
 
 
 def log(msg):
@@ -67,7 +83,7 @@ def camera_supports_mjpeg(dev):
     return "image/jpeg" in out
 
 
-def main():
+def main() -> int:
     if not os.path.exists(DEV):
         log(f"カメラが見つかりません: {DEV}")
         sys.exit(1)
@@ -124,8 +140,30 @@ def main():
     flat = [tok for part in pipeline for tok in part.split(" ") if tok]
     cmd = ["gst-launch-1.0", "-e"] + flat
     log("起動: " + " ".join(cmd))
-    os.execvp(cmd[0], cmd)
+
+    # ハブが再起動すると PlainTransport が消えるが、UDP 送出は fire-and-forget
+    # なので gst-launch は何も気づかず送り続ける（プロセスが終了しないので
+    # systemd の Restart=always も効かない）。ingest が生きているか定期的に
+    # 確認し、消えていたら自分から終了して再登録させる。
+    proc = subprocess.Popen(cmd)
+    try:
+        while True:
+            time.sleep(HEALTH_INTERVAL)
+            if proc.poll() is not None:
+                log(f"gst-launch が終了 (rc={proc.returncode})")
+                return proc.returncode
+            if not ingest_alive():
+                log("ハブ側の ingest が消えたので再登録する")
+                proc.terminate()
+                try:
+                    proc.wait(timeout=10)
+                except subprocess.TimeoutExpired:
+                    proc.kill()
+                return 1
+    except KeyboardInterrupt:
+        proc.terminate()
+        return 0
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main() or 0)
