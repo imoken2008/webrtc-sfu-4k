@@ -37,3 +37,27 @@ sudo systemctl enable --now sfu-hub
 Pi 5 の eth0 はギガビット。`start.sh` は eth0 にキャリアがあれば必ずそちらを
 ANNOUNCED_IP に選ぶので、**LAN ケーブルを挿して再起動するだけ**で切り替わる。
 現状は eth0 が DOWN で無線(wlan0)運用。
+
+## ハブの参照は必ず mDNS 名で
+
+`pi5.local` を使うこと。IP 直書きは禁止。
+
+- Pi 5 は有線(eth0)と無線(wlan0)で別々の IP を持つ。**LAN ケーブルを挿した瞬間に
+  IP が変わる**ため、直書きは追従できない
+- DHCP のリース変更でも壊れる
+- 自己署名証明書の SAN に `pi5` / `pi5.local` を入れてあるので、HTTPS でも
+  名前でアクセスできる
+
+参照箇所:
+- ダッシュボード: `personal-ai-secretary/core/sfu_publisher.py` の `SFU_HUB_URL`
+- Jetson: `/etc/systemd/system/jetson-sfu.service` の `Environment=SFU_HUB_URL`
+
+## HTTPS を使うときは証明書を2つ承認する
+
+ダッシュボードを HTTPS(5443) で開くと、ハブへの接続も HTTPS(8443) になる。
+**それぞれ別オリジンなので、両方を一度ずつ承認しないと黒画面になる**。
+
+1. `https://pi5.local:8443/health` ← ハブ
+2. `https://<dashboard>:5443/dashboard` ← ダッシュボード
+
+承認済みなら HTTP 版と同じく 4K が描画される（実測確認済み）。
