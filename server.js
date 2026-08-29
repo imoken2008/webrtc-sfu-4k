@@ -65,30 +65,24 @@ const MEDIA_CODECS = [
     clockRate: 90000,
     parameters: { 'profile-id': 0 },
   },
-  // H.264 を2種類宣言する。用途で要求が異なるため:
-  //  - ブラウザからの送出(getUserMedia→produce): Constrained Baseline が最も確実
-  //  - 4K の配信(Jetson の NVENC): ブラウザのHWデコーダは 4K では High を前提に
-  //    しているものが多く、Baseline の 4K は黒画面になる
-  // level-asymmetry-allowed=1 なので、双方が自分の出せる/受けられる方を選べる。
   {
     kind: 'video',
     mimeType: 'video/H264',
     clockRate: 90000,
     parameters: {
       'packetization-mode': 1,
-      // 640034 = High / Level 5.2 (4K30 を正当にカバー)
-      'profile-level-id': '640034',
-      'level-asymmetry-allowed': 1,
-    },
-  },
-  {
-    kind: 'video',
-    mimeType: 'video/H264',
-    clockRate: 90000,
-    parameters: {
-      'packetization-mode': 1,
-      // 42e01f = Constrained Baseline / Level 3.1（ブラウザ送出用の保険）
-      'profile-level-id': '42e01f',
+      // 42e034 = Constrained Baseline / Level 5.2。
+      //
+      // プロファイルは Baseline から動かしてはいけない。ブラウザが受信可能と
+      // 宣言する H264 は Constrained Baseline だけのことが多く（実測: Chrome は
+      // 42e01f のみ）、High(640034) を宣言すると router.canConsume() が false に
+      // なって「接続はできるが映像が出ない」状態になる。
+      //
+      // レベルだけ 3.1→5.2 に上げてある。3.1 は規格上 1280x720@30 までで、
+      // それ以上の解像度を流すと宣言と実体が食い違う。
+      // level-asymmetry-allowed=1 なので、42e01f しか宣言しない相手とも
+      // レベル差を許容して consume できる（実測で確認済み）。
+      'profile-level-id': '42e034',
       'level-asymmetry-allowed': 1,
     },
   },

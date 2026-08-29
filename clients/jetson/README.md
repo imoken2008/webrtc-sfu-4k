@@ -82,14 +82,34 @@ HDMI ソースが繋がっていないとキャプチャに失敗する。
 `Environment=SFU_DISPLAY_NAME=Cam Link 4K` は "Cam" で切れる。
 `Environment="SFU_DISPLAY_NAME=Cam Link 4K"` と書くこと。
 
-## 4K を送るときの必須事項
+## H.264 プロファイルは Baseline から動かさない（実測）
 
-- **router に High profile (640034) の宣言が要る**。ブラウザのHWデコーダは 4K では
-  High を前提にしているものが多く、**Constrained Baseline の 4K は黒画面**になる。
-  server.js は H264 を2つ宣言している（High 5.2 / Baseline 3.1）。ingest は
-  プロファイルの高い方を自動選択し、payloadType も router の割当に追従する
-- **Level にも注意**。42e01f は Level 3.1 で規格上 1280x720@30 まで。4K を流すなら
-  Level 5.1 以上（例: 640034 = High 5.2）
+Chrome が**受信可能と宣言する H264 は `42e01f` (Constrained Baseline) のみ**だった。
+router に High (640034) を宣言すると `router.canConsume()` が false になり、
+**socket接続もjoinも成功するのに映像だけ出ない**という分かりにくい壊れ方をする。
+
+```
+[sfu] joined producer 1 件
+[sfu] consume 失敗: canConsume=false     ← これが出たらプロファイル不一致
+```
+
+正しくは **Baseline のままレベルだけ上げる**: `42e034` = Constrained Baseline / Level 5.2。
+`level-asymmetry-allowed=1` があるので、`42e01f` しか宣言しない相手ともレベル差を
+許容して consume できる（実測で確認済み）。
+
+## 受信側の切り分け方
+
+推測せず、実ブラウザで観測すること。
+
+```python
+# Chrome を Playwright から起動（executable_path で system Chrome を使う）
+# ※ HeadlessChrome の UA だと mediasoup-client が
+#   "UnsupportedError: device not supported" を投げるので UA を偽装する
+ctx = b.new_context(user_agent="...Chrome/151.0.0.0 Safari/537.36")
+ctx.add_init_script("window.__logs=[]; ...console をフック...")
+pg.evaluate("() => window.SecretaryCam.device.rtpCapabilities")  # 受信可能コーデック
+pg.evaluate("() => window.SecretaryCam.getStats()")              # state/peers/tracks
+```
 
 ## デバイスパスは by-id を使う
 
