@@ -10,12 +10,12 @@ Jetson 側に Node / mediasoup は不要。ハブの `POST /api/ingest/start` �
 ## 導入
 
 ```bash
-sudo apt-get update && sudo apt-get install -y jq v4l-utils
-mkdir -p ~/jetson-sfu && cp stream-to-sfu.sh ~/jetson-sfu/
-chmod +x ~/jetson-sfu/stream-to-sfu.sh
+# 追加パッケージ不要（JetPack標準の python3 と GStreamer だけで動く）
+cp stream_to_sfu.py ~/
+chmod +x ~/stream_to_sfu.py
 
 # 手動で試す
-~/jetson-sfu/stream-to-sfu.sh
+~/stream_to_sfu.py
 
 # 常駐化
 sudo cp jetson-sfu.service /etc/systemd/system/
@@ -43,3 +43,18 @@ journalctl -u jetson-sfu -f
   直書きしてはいけない（router 側を変更したとき `unsupported codec` で壊れる）
 - ハブを再起動すると PlainTransport が消える。`Restart=always` で
   ingest 要求からやり直させている
+
+
+## 実機での知見 (Jetson Xavier NX / JetPack 5.0.2)
+
+- **argv の渡し方**: `gst_parse_launchv` は argv の1要素を1トークンとして扱う。
+  `"v4l2src device=X io-mode=2"` のようにスペース入り文字列を1要素で渡すと
+  `erroneous pipeline: syntax error` になる。単語ごとに分割して渡すこと
+- **USB が全滅したとき**: ポートが無反応になり抜き差ししてもカーネルが
+  何も検出しなくなることがある。再起動せずに直せる:
+  ```
+  sudo sh -c 'echo 3610000.xhci > /sys/bus/platform/drivers/tegra-xusb/unbind'
+  sudo sh -c 'echo 3610000.xhci > /sys/bus/platform/drivers/tegra-xusb/bind'
+  ```
+- **カメラは USB 3.0 側に挿す**。ハブ多段(4段)にぶら下げると給電が不安定で
+  繰り返し切断される
