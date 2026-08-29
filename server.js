@@ -65,15 +65,29 @@ const MEDIA_CODECS = [
     clockRate: 90000,
     parameters: { 'profile-id': 0 },
   },
+  // H.264 を2種類宣言する。用途で要求が異なるため:
+  //  - ブラウザからの送出(getUserMedia→produce): Constrained Baseline が最も確実
+  //  - 4K の配信(Jetson の NVENC): ブラウザのHWデコーダは 4K では High を前提に
+  //    しているものが多く、Baseline の 4K は黒画面になる
+  // level-asymmetry-allowed=1 なので、双方が自分の出せる/受けられる方を選べる。
   {
     kind: 'video',
     mimeType: 'video/H264',
     clockRate: 90000,
     parameters: {
       'packetization-mode': 1,
-      // 42e01f = Constrained Baseline 3.1。WebRTC で最も互換性が高く、
-      // ブラウザからの送出(getUserMedia→produce)が確実に通る。
-      // High 5.2 (640034) は一部ブラウザが受け付けないため使わない。
+      // 640034 = High / Level 5.2 (4K30 を正当にカバー)
+      'profile-level-id': '640034',
+      'level-asymmetry-allowed': 1,
+    },
+  },
+  {
+    kind: 'video',
+    mimeType: 'video/H264',
+    clockRate: 90000,
+    parameters: {
+      'packetization-mode': 1,
+      // 42e01f = Constrained Baseline / Level 3.1（ブラウザ送出用の保険）
       'profile-level-id': '42e01f',
       'level-asymmetry-allowed': 1,
     },
@@ -257,7 +271,7 @@ async function main() {
         roomId      = 'secretary-cam',
         name        = 'webcam',
         displayName = 'Webカメラ',
-        payloadType = 102,
+        payloadType: reqPt,
         ssrc        = 22222222,
       } = req.body || {};
 
@@ -277,10 +291,21 @@ async function main() {
       // router が実際に持っている H264 の定義をそのまま使う。
       // ここにパラメータを直書きすると、router 側の profile-level-id を
       // 変更したときに produce が "unsupported codec" で落ちる。
-      const routerH264 = room.router.rtpCapabilities.codecs.find(
+      // 複数の H264 が宣言されている場合、ingest は解像度制約の緩い方
+      // （プロファイルが高い方）を選ぶ。4K を Baseline で送るとブラウザの
+      // HWデコーダが受け付けず黒画面になるため。
+      const h264s = room.router.rtpCapabilities.codecs.filter(
         (c) => c.mimeType.toLowerCase() === 'video/h264'
       );
+      const rank = (c) => {
+        const pli = String(c.parameters?.['profile-level-id'] ?? '');
+        return pli.startsWith('64') ? 3 : pli.startsWith('4d') ? 2 : 1;
+      };
+      const routerH264 = h264s.sort((a, b) => rank(b) - rank(a))[0];
       if (!routerH264) throw new Error('router が H264 を持っていません');
+
+      // payloadType は router が割り当てた値に合わせる。ずれると produce が弾かれる。
+      const payloadType = reqPt ?? routerH264.preferredPayloadType ?? 102;
 
       const producer = await transport.produce({
         kind: 'video',
