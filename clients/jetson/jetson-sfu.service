@@ -1,0 +1,30 @@
+[Unit]
+Description=Jetson camera → SFU hub (H.264 RTP ingest)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=imoken2008
+Environment=SFU_HUB_URL=http://sfu-hub.local:8080
+Environment=SFU_ROOM_ID=secretary-cam
+Environment=SFU_INGEST_NAME=jetson
+Environment=SFU_DISPLAY_NAME=Jetson Xavier NX
+Environment=CAM_DEVICE=/dev/video0
+Environment=CAM_WIDTH=1280
+Environment=CAM_HEIGHT=720
+Environment=CAM_FPS=30
+Environment=CAM_BITRATE=4000000
+ExecStart=/home/imoken2008/jetson-sfu/stream-to-sfu.sh
+
+# ハブ側が再起動すると PlainTransport が消えるので、都度 ingest を張り直す。
+# Restart=always にしておけば ExecStart 冒頭の ingest 要求からやり直される。
+Restart=always
+RestartSec=5
+
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=jetson-sfu
+
+[Install]
+WantedBy=multi-user.target
