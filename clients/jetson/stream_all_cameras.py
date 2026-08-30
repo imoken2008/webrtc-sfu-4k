@@ -33,6 +33,11 @@ MAX_OUT_W = int(os.environ.get("MAX_OUT_WIDTH", "1920"))
 MAX_OUT_H = int(os.environ.get("MAX_OUT_HEIGHT", "1080"))
 BITRATE = os.environ.get("CAM_BITRATE", "6000000")
 FPS = os.environ.get("CAM_FPS", "30")
+# 落ちたストリーマを拾い直すまでの待ち。カメラ再接続直後は
+# デバイスの準備が終わっておらず、すぐ再試行しても また落ちる。
+RETRY_DELAY = int(os.environ.get("RETRY_DELAY", "5"))
+# 死活監視の間隔（udev イベントが無くてもこの間隔で見に行く）
+HEALTH_POLL = int(os.environ.get("HEALTH_POLL", "5"))
 
 
 def log(msg):
@@ -174,6 +179,8 @@ def reconcile(running):
         if name not in cams:
             running.pop(name).stop()               # カメラが抜かれた
         elif not running[name].alive():
+            # 落ちたものはこの場で起動し直す。次の udev イベントを待つと
+            # 何も起きないまま止まったままになる（実際にそうなった）。
             log(f"落ちていたので起動し直す: {name}")
             running.pop(name)
 
@@ -211,7 +218,9 @@ def main():
 
         if mon:
             # イベントが来るまで待つ。保険の再スキャン時刻までをタイムアウトにする。
-            remain = max(1.0, SCAN_INTERVAL - (time.time() - last_scan))
+            # 死活監視を回すため、待ち時間は長くても HEALTH_POLL に抑える
+            remain = min(HEALTH_POLL,
+                         max(1.0, SCAN_INTERVAL - (time.time() - last_scan)))
             r, _, _ = select.select([mon.stdout], [], [], remain)
             if r:
                 line = mon.stdout.readline()
@@ -230,6 +239,16 @@ def main():
                     triggered = True
         else:
             time.sleep(min(5, SCAN_INTERVAL))
+
+        # 落ちたストリーマがあれば、イベントを待たずに拾い直す。
+        # カメラ再接続の直後はデバイスの準備が間に合わず
+        # "not-negotiated" で落ちることがあるため、ここが無いと
+        # そのカメラだけ止まったままになる。
+        dead = [n for n, st in running.items() if not st.alive()]
+        if dead:
+            log(f"停止中のストリーマを検出: {', '.join(dead)}")
+            time.sleep(RETRY_DELAY)
+            triggered = True
 
         if triggered or (time.time() - last_scan) >= SCAN_INTERVAL:
             reconcile(running)
