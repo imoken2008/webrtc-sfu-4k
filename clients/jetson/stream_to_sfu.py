@@ -33,24 +33,11 @@ BITRATE = int(os.environ.get("CAM_BITRATE", "4000000"))
 # 空なら映像のみ。BRIO なら内蔵マイク、Cam Link なら HDMI 入力に乗ってきた音。
 AUDIO_DEVICE = os.environ.get("AUDIO_DEVICE", "")
 AUDIO_BITRATE = int(os.environ.get("AUDIO_BITRATE", "64000"))
-# 1 なら送出前に声を整える。webrtcdsp（ノイズ抑制 + 自動ゲイン）と
-# ハイパスフィルタを通す。0 で素通し。
-AUDIO_DSP = os.environ.get("AUDIO_DSP", "1") != "0"
 # マイクは実測でモノラルを2chに複製していることが多い（BRIO は L=R が 100%）。
 # 1ch にすると同じビットレートで倍の情報量を割ける上、文字起こしにも都合がよい。
+# ここは「無駄を送らない」だけの設定で、音そのものは加工しない。
+# ノイズ抑制やゲイン調整はハブ側でまとめてやる（送出側は素の音を送る）。
 AUDIO_CHANNELS = int(os.environ.get("AUDIO_CHANNELS", "1"))
-# 声より下の暗騒音を落とす遮断周波数。0 で無効。
-# 実測では 300Hz 以下が全エネルギーの約 8 割を占めていた。
-# 男声の基本周波数(85Hz〜)を削らないよう 90Hz 以下だけを対象にする。
-AUDIO_HPF_HZ = int(os.environ.get("AUDIO_HPF_HZ", "90"))
-# ノイズ抑制の強さ: low / moderate / high / very-high
-# 強くするほど静かになるが、声も削れて文字起こしの精度が落ちる
-AUDIO_NS_LEVEL = os.environ.get("AUDIO_NS_LEVEL", "moderate")
-# 自動ゲインが持ち上げてよい最大量(dB)。マイクが遠い/小声なら増やす
-AUDIO_GAIN_DB = int(os.environ.get("AUDIO_GAIN_DB", "24"))
-# 自動ゲインの目標ピーク。フルスケールから何 dB 下を狙うか
-AUDIO_TARGET_DBFS = int(os.environ.get("AUDIO_TARGET_DBFS", "6"))
-# opus の最適化対象: voice / generic / restricted-lowdelay
 AUDIO_TYPE = os.environ.get("AUDIO_TYPE", "voice")
 # 想定パケットロス率。ハブは元のパケットをそのまま転送するので、
 # ここで付けた FEC は無線で見ている端末まで効く
@@ -213,43 +200,15 @@ def main() -> int:
         log(f"音声カード {AUDIO_DEVICE} が見つからないので映像のみで続行する")
         audio_info = None
     if AUDIO_DEVICE and audio_info:
-        dsp = (f"補正あり(NS={AUDIO_NS_LEVEL} AGC最大{AUDIO_GAIN_DB}dB "
-               f"HPF{AUDIO_HPF_HZ}Hz)" if AUDIO_DSP else "補正なし")
         log(f"音声: {AUDIO_DEVICE} → {ip}:{audio_info['port']} "
             f"pt={audio_info['payloadType']} ssrc={audio_info['ssrc']} "
-            f"{AUDIO_CHANNELS}ch {AUDIO_BITRATE//1000}kbps {dsp}")
+            f"{AUDIO_CHANNELS}ch {AUDIO_BITRATE//1000}kbps 素の音")
         pipeline += [
             "alsasrc", f"device=hw:{AUDIO_DEVICE}",
             # ライブ入力なのでバッファを短くして遅延を抑える
             "buffer-time=40000", "latency-time=10000", "provide-clock=false",
             "!", "audioconvert", "!", "audioresample",
-            f"!", f"audio/x-raw,rate=48000,channels={AUDIO_CHANNELS}",
-        ]
-        if AUDIO_DSP:
-            if AUDIO_HPF_HZ > 0:
-                # audiocheblimit は浮動小数点しか扱えないので、
-                # ここでは format を固定せず自分で選ばせる。
-                pipeline += [
-                    "!", "audiocheblimit", "mode=high-pass",
-                    f"cutoff={AUDIO_HPF_HZ}", "poles=4",
-                ]
-            pipeline += [
-                # webrtcdsp は S16LE 固定
-                "!", "audioconvert", "!", "audio/x-raw,format=S16LE",
-                "!", "webrtcdsp",
-                # スピーカーを鳴らしていないのでエコーキャンセラは不要。
-                # true のままだと webrtcechoprobe を要求されて組み立てに失敗する。
-                "echo-cancel=false",
-                "noise-suppression=true",
-                f"noise-suppression-level={AUDIO_NS_LEVEL}",
-                "gain-control=true", "gain-control-mode=adaptive-digital",
-                f"compression-gain-db={AUDIO_GAIN_DB}",
-                f"target-level-dbfs={AUDIO_TARGET_DBFS}",
-                # 持ち上げた結果が振り切れないよう頭を押さえる
-                "limiter=true", "high-pass-filter=true",
-                "!", "audioconvert",
-            ]
-        pipeline += [
+            "!", f"audio/x-raw,rate=48000,channels={AUDIO_CHANNELS}",
             "!", "opusenc", f"bitrate={AUDIO_BITRATE}",
             f"audio-type={AUDIO_TYPE}", "frame-size=20",
             "inband-fec=true", f"packet-loss-percentage={AUDIO_FEC_PCT}",

@@ -5,6 +5,7 @@ const fs = require('fs');
 const path = require('path');
 const { Server } = require('socket.io');
 const mediasoup = require('mediasoup');
+const { AudioTap } = require('./audio_tap');
 const { spawn } = require('child_process');
 
 // ─── Configuration ───────────────────────────────────────────────────────────
@@ -102,7 +103,31 @@ const MEDIA_CODECS = [
 
 let worker;
 let webRtcServer;
+// 音声タップを仕掛けるか。本流には触らないので既定で有効。
+const AUDIO_TAP = process.env.AUDIO_TAP !== '0';
+
 const rooms = new Map();
+// producerId → AudioTap
+const taps = new Map();
+
+/**
+ * 音声 producer に解析用のタップを仕掛ける。
+ * 失敗しても本流には影響がないので、握りつぶして先へ進める。
+ */
+async function startTap(room, roomId, producer, peerId, displayName) {
+  if (!AUDIO_TAP || producer.kind !== 'audio' || taps.has(producer.id)) return;
+  try {
+    const tap = new AudioTap({
+      router: room.router, producer, roomId, peerId, displayName,
+      onAnalysis: (data) => { if (io) io.to(roomId).emit('audioAnalysis', data); },
+    });
+    await tap.start();
+    taps.set(producer.id, tap);
+    producer.observer.once('close', () => taps.delete(producer.id));
+  } catch (err) {
+    console.warn(`[tap] 仕掛けられなかった (${displayName}): ${err.message}`);
+  }
+}
 let workerRestartInProgress = false;
 let io; // Socket.IO instance — assigned after server creation
 
@@ -384,6 +409,10 @@ async function main() {
 
       producer.observer.once('close', () => room.ingests.delete(name));
 
+      if (audioProducer) {
+        startTap(room, roomId, audioProducer, `ingest:${name}`, displayName);
+      }
+
       // 既に部屋にいる視聴者へ即通知（join 済みのブラウザが再読込なしで映る）
       if (io) {
         io.to(roomId).emit('newProducer', {
@@ -644,6 +673,8 @@ async function main() {
           displayName: peer.displayName,
           kind: producer.kind,
         });
+
+        startTap(room, roomId, producer, socket.id, peer.displayName);
 
         console.log(`[produce] ${peer.displayName} ${kind} (${producer.rtpParameters.codecs[0]?.mimeType})`);
         cb({ id: producer.id });
