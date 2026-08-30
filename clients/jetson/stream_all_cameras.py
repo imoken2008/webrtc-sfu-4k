@@ -34,7 +34,7 @@ MAX_OUT_H = int(os.environ.get("MAX_OUT_HEIGHT", "1080"))
 BITRATE = os.environ.get("CAM_BITRATE", "6000000")
 # 音声も一緒に送るか。カメラごとの ALSA カードを自動で対応付ける。
 WITH_AUDIO = os.environ.get("WITH_AUDIO", "1") != "0"
-AUDIO_BITRATE = os.environ.get("AUDIO_BITRATE", "128000")
+AUDIO_BITRATE = os.environ.get("AUDIO_BITRATE", "64000")
 FPS = os.environ.get("CAM_FPS", "30")
 # 落ちたストリーマを拾い直すまでの待ち。カメラ再接続直後は
 # デバイスの準備が終わっておらず、すぐ再試行しても また落ちる。
