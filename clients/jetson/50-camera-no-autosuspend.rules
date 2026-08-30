@@ -1,0 +1,11 @@
+# USB カメラの自動サスペンドを無効にする。
+#
+# 既定では 2 秒アイドルで省電力状態に入るが、Cam Link 4K は
+# その復帰に失敗して USB から切断される（dmesg:
+# "LPM exit latency is zeroed, disabling LPM" の直後に disconnect）。
+# 映像を流し続ける機器に省電力は不要なので切る。
+#
+# 0fd9:0066 = Elgato Cam Link 4K
+# 046d:085e = Logicool BRIO
+ACTION=="add", SUBSYSTEM=="usb", ATTR{idVendor}=="0fd9", ATTR{idProduct}=="0066", TEST=="power/control", ATTR{power/control}="on"
+ACTION=="add", SUBSYSTEM=="usb", ATTR{idVendor}=="046d", ATTR{idProduct}=="085e", TEST=="power/control", ATTR{power/control}="on"

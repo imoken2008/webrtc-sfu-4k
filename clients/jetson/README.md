@@ -262,3 +262,50 @@ Jetson: CPU 20-60% / NVENC 499MHz / VIC 75% / 47℃ / 6.4W
 ```
 
 USB は 4K×2台（Cam Link 非圧縮 + BRIO MJPEG）でも URB エラーがほぼ出ない。
+
+## Cam Link が周期的に切断される原因（調査結果）
+
+4K 映像が数分おきにカクつく／配信が途切れる場合、**Cam Link 自身が USB から
+消えている**ことがある。原因は Jetson でも USB でもなく、**HDMI 入力側**。
+
+### 決定的なログ
+
+```
+usb 2-3.1: reset SuperSpeed Gen 1 USB device using tegra-xusb
+usb 2-3.1: LPM exit latency is zeroed, disabling LPM.
+usb 2-3.1: device firmware changed        ← これ
+usb 2-3.1: USB disconnect
+```
+
+`device firmware changed` は、USB リセット後にデバイスのディスクリプタが
+変わったときに出る。**Cam Link は HDMI 入力の信号が変化すると自分を
+再初期化**し、報告する映像フォーマットが変わるため、カーネルには別デバイスに
+見えて切断・再列挙される。
+
+### 対照実験
+
+同じハブ・同じ電源で、外部入力を持たない BRIO と比較した:
+
+| | Cam Link (HDMI入力あり) | BRIO (外部入力なし) |
+|---|---|---|
+| `device firmware changed` | **5回** | **0回** |
+| USB 切断 | **8回** | **0回** |
+
+### 否定された仮説（すべて実測で除外）
+
+| 疑い | 検証 | 結果 |
+|---|---|---|
+| USB 帯域の競合 | BRIO を止めて Cam Link 単独で12分 | ❌ 単独でも2回切断 |
+| USB 自動サスペンド | udev で `power/control=on` に固定 | ❌ 変化なし |
+| 給電不足 | 800mA / 内蔵ハブ、BRIO は無事 | ❌ 否定 |
+| Jetson の負荷 | CPU 20-60% / NVENC余裕 / 47℃ | ❌ 否定 |
+
+### 対処
+
+**根本対処は HDMI 側**（ワイヤレス HDMI のリンク安定化、有線化、
+ソース側の解像度固定）。Jetson 側でできるのは復帰の速さだけで、
+`stream_all_cameras.py` の死活監視により **7秒程度で自動復帰**する。
+
+なお **Cam Link は HDMI 入力の解像度をそのまま USB に流す**。4K 入力だと
+`3840x2160 NV12 30fps = 373MB/s` で USB3.0 実効上限(約400MB/s)の93%を使う。
+**ソース側を 1080p にすれば 1/4 に減る**ので、安定性を優先するなら有効。
