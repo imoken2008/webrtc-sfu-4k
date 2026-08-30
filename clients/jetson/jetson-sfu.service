@@ -12,7 +12,7 @@ Environment=SFU_ROOM_ID=secretary-cam
 # 接続されている全カメラを自動検出して1台ずつ配信する。
 # 抜き差しは SCAN_INTERVAL 秒ごとに検知して起動/停止する。
 Environment=STREAMER=/home/imoken/stream_to_sfu.py
-Environment=SCAN_INTERVAL=15
+Environment=SCAN_INTERVAL=300
 
 # 送出解像度の上限。これを超える入力(Cam Linkの4K等)はVICで縮小する。
 Environment=MAX_OUT_WIDTH=1920

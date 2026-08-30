@@ -13,13 +13,16 @@
 """
 import os
 import re
+import select
 import signal
 import subprocess
 import sys
 import time
 
 BY_ID = "/dev/v4l/by-id"
-SCAN_INTERVAL = int(os.environ.get("SCAN_INTERVAL", "15"))
+# 保険としての再スキャン間隔。udev イベントで即座に反応するので、
+# ここは「イベントを取りこぼした場合の最後の砦」でしかない。
+SCAN_INTERVAL = int(os.environ.get("SCAN_INTERVAL", "300"))
 STREAMER = os.environ.get("STREAMER", os.path.expanduser("~/stream_to_sfu.py"))
 
 # 映像として使える形式。GREY は赤外センサなので配信対象から外す。
@@ -146,35 +149,91 @@ class Streamer:
                 pass
 
 
+def udev_monitor():
+    """udev の video4linux イベントを待ち受ける。
+
+    ポーリングだと最大 SCAN_INTERVAL 秒の遅れが出るので、カーネルからの
+    通知で即座に反応する。udevadm が使えない環境では None を返し、
+    呼び出し側がポーリングのみにフォールバックする。
+    """
+    try:
+        return subprocess.Popen(
+            ["udevadm", "monitor", "--udev", "--subsystem-match=video4linux"],
+            stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True, bufsize=1,
+        )
+    except FileNotFoundError:
+        log("udevadm が無いためポーリングのみで動作する")
+        return None
+
+
+def reconcile(running):
+    """検出結果と起動中のプロセスを突き合わせる"""
+    cams = discover()
+
+    for name in list(running):
+        if name not in cams:
+            running.pop(name).stop()               # カメラが抜かれた
+        elif not running[name].alive():
+            log(f"落ちていたので起動し直す: {name}")
+            running.pop(name)
+
+    for name, info in cams.items():
+        if name not in running:
+            running[name] = Streamer(name, info)
+    return cams
+
+
 def main():
     running = {}
+    mon = udev_monitor()
 
     def shutdown(*_):
         for s in running.values():
             s.stop()
+        if mon:
+            mon.terminate()
         sys.exit(0)
 
     signal.signal(signal.SIGTERM, shutdown)
     signal.signal(signal.SIGINT, shutdown)
 
-    log(f"監視開始（{SCAN_INTERVAL}秒間隔 / 送出上限 {MAX_OUT_W}x{MAX_OUT_H} @ {BITRATE}bps）")
+    mode = "udev イベント駆動" if mon else "ポーリングのみ"
+    log(f"監視開始（{mode} / 保険の再スキャン {SCAN_INTERVAL}秒 / "
+        f"送出上限 {MAX_OUT_W}x{MAX_OUT_H} @ {BITRATE}bps）")
+
+    cams = reconcile(running)
+    if not cams:
+        log("カメラが1台も見つからない")
+
+    last_scan = time.time()
     while True:
-        cams = discover()
+        triggered = False
 
-        for name in list(running):
-            if name not in cams:
-                running.pop(name).stop()          # カメラが抜かれた
-            elif not running[name].alive():
-                log(f"再起動: {name}")
-                running.pop(name)                  # 落ちたので次のループで起動し直す
+        if mon:
+            # イベントが来るまで待つ。保険の再スキャン時刻までをタイムアウトにする。
+            remain = max(1.0, SCAN_INTERVAL - (time.time() - last_scan))
+            r, _, _ = select.select([mon.stdout], [], [], remain)
+            if r:
+                line = mon.stdout.readline()
+                if not line:                       # udevadm が死んだ
+                    log("udev 監視が止まったので再起動する")
+                    mon = udev_monitor()
+                    continue
+                if "video4linux" in line:
+                    # add/remove の直後はデバイスノードが揃っていないことがあるので
+                    # 少し待ってから、連続イベントをまとめて処理する
+                    time.sleep(1.5)
+                    while select.select([mon.stdout], [], [], 0.5)[0]:
+                        if not mon.stdout.readline():
+                            break
+                    log(f"udev: {line.split()[-1] if line.split() else line.strip()}")
+                    triggered = True
+        else:
+            time.sleep(min(5, SCAN_INTERVAL))
 
-        for name, info in cams.items():
-            if name not in running:
-                running[name] = Streamer(name, info)
-
-        if not cams:
-            log("カメラが1台も見つからない")
-        time.sleep(SCAN_INTERVAL)
+        if triggered or (time.time() - last_scan) >= SCAN_INTERVAL:
+            reconcile(running)
+            last_scan = time.time()
 
 
 if __name__ == "__main__":
