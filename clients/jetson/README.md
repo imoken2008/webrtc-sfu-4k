@@ -146,3 +146,29 @@ jtop
 ```
 NVENC/NVDEC/VIC の稼働状況が見える。GPU(GR3D) が 0% のまま NVENC が
 499MHz で回っていれば、専用ハードウェアでエンコードできている証拠。
+
+## フォーマット判定は v4l2-ctl で（gst-device-monitor の落とし穴）
+
+`gst-device-monitor-1.0` の出力は `Device found:` 区切りだが、**その中で
+`device.path` が caps より後に出る**。区切りで分割して「対象パスを含む
+ブロックの caps」を見ると、**別デバイスの caps を読んでしまう**。
+
+実際に、BRIO(MJPEG対応) と Cam Link(rawのみ) を同時接続した状態で
+Cam Link を MJPEG と誤判定し、`image/jpeg` を要求するパイプラインを組んで
+ネゴシエーションに失敗、`receiving=False` で配信が止まった。
+
+対処: `v4l2-ctl -d <実体パス> --list-formats` で直接引く。無い場合は
+device.path 行から遡って直前の `Device found:` までをそのデバイスの
+ブロックとみなす。
+
+```
+$ v4l2-ctl -d /dev/video4 --list-formats   # Cam Link
+NV12
+$ v4l2-ctl -d /dev/video0 --list-formats   # BRIO
+MJPG NV12 YUYV
+```
+
+## by-id パスの効果（実例）
+
+カメラを挿し直したら Cam Link は `/dev/video1` → `/dev/video4` に動いたが、
+`by-id` の固定パスを使っていたため**設定変更なしで追従**した。

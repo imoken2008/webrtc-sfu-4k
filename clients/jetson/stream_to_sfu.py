@@ -10,6 +10,7 @@ JetPack 標準の python3 と GStreamer だけで動く（jq / curl / v4l-utils 
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
 import time
@@ -68,19 +69,45 @@ def post_json(url, payload):
 
 
 def camera_supports_mjpeg(dev):
-    """gst-device-monitor で対応フォーマットを見る（v4l2-ctl の代わり）"""
+    """対象デバイスが MJPEG を出せるかを判定する。
+
+    gst-device-monitor の出力は "Device found:" 区切りだが、その中で
+    device.path が caps より後に来るため、区切りで分割して判定すると
+    別デバイスの caps を読んでしまう（実際に Cam Link を MJPEG と誤判定し、
+    ネゴシエーションに失敗して配信が止まった）。
+
+    v4l2-ctl があればそれで直接引く。無ければ device.path の直前までを
+    そのデバイスのブロックとみなして判定する。
+    """
+    real = os.path.realpath(dev)
+
+    if shutil.which("v4l2-ctl"):
+        try:
+            out = subprocess.run(["v4l2-ctl", "-d", real, "--list-formats"],
+                                 capture_output=True, text=True, timeout=15).stdout
+            return "MJPG" in out.upper()
+        except Exception as e:
+            log(f"v4l2-ctl での判定に失敗、gst で代替する: {e}")
+
     try:
         out = subprocess.run(["gst-device-monitor-1.0", "Video/Source"],
-                             capture_output=True, text=True, timeout=20).stdout
+                             capture_output=True, text=True, timeout=25).stdout
     except Exception as e:
         log(f"デバイス情報の取得に失敗（rawとして扱う）: {e}")
         return False
-    # 対象デバイスのブロックだけを見る
-    blocks = out.split("Device found:")
-    for b in blocks:
-        if dev in b:
-            return "image/jpeg" in b
-    return "image/jpeg" in out
+
+    # device.path 行を見つけ、そこから直前の "Device found:" までを遡って
+    # そのデバイスのブロックとする
+    lines = out.splitlines()
+    for i, line in enumerate(lines):
+        if "device.path" in line and (real in line or dev in line):
+            start = 0
+            for j in range(i, -1, -1):
+                if "Device found:" in lines[j]:
+                    start = j
+                    break
+            return any("image/jpeg" in l for l in lines[start:i + 1])
+    return False
 
 
 def main() -> int:
