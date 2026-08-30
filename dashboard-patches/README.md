@@ -35,3 +35,41 @@ iPadOS 13+ は UA が Mac を名乗るので、`maxTouchPoints` で判定して�
 タイル   : 1920x1080  ← 完全一致
 映像領域 : 1920x1080  ← 余白なし
 ```
+
+## 全画面から戻ると映像が止まる問題（fullscreen-resume.js）
+
+iPad で全画面を抜けると映像が固まる、という報告への対処。
+
+### 原因
+
+iOS の `video.webkitEnterFullscreen()` はネイティブプレイヤーを起動する。
+そこから戻るときにインライン再生へ復帰せず、**一時停止のまま固まる**ことがある。
+`srcObject` に MediaStream を入れている場合は特に、`play()` を呼び直すだけでは
+描画が再開しないことがある。
+
+### 対処
+
+`webkitendfullscreen` を拾って復帰させる。二段構えにしてある:
+
+1. まず `play()` を呼ぶ
+2. 500ms 後にまだ `paused` か `readyState < 2` なら、**srcObject を付け直す**
+   （`null` を入れてから同じ MediaStream を再代入）
+
+あわせて次も拾う:
+
+- `pause` イベント — ライブ映像に一時停止は無意味なので自動で再開する
+  （タブが裏にあるときは除く）
+- `visibilitychange` — タブに戻ったときに止まっていれば再開
+- `fullscreenchange` / `webkitfullscreenchange` — デスクトップ側の全画面解除
+
+### 検証
+
+iOS 実機は手元に無いため、**同じ復帰経路を通る「強制一時停止」で確認**した:
+
+```
+強制停止直後 : paused=True  t=32.4
+3秒後        : paused=False t=34.4   → 自動復帰
+再生位置     : 34.4 → 37.7           → フリーズしていない
+```
+
+`webkitendfullscreen` 自体の発火は iPad 実機での確認が必要。
