@@ -172,3 +172,35 @@ MJPG NV12 YUYV
 
 カメラを挿し直したら Cam Link は `/dev/video1` → `/dev/video4` に動いたが、
 `by-id` の固定パスを使っていたため**設定変更なしで追従**した。
+
+## 全カメラを自動配信する
+
+`stream_all_cameras.py` が接続中の全カメラを検出し、1台につき
+`stream_to_sfu.py` を1本起動する。ダッシュボードのグリッドに台数ぶんの
+タイルが並ぶ。抜き差しは `SCAN_INTERVAL`（既定15秒）ごとに検知して
+起動/停止する。
+
+### 1台のカメラが複数ノードを持つ点に注意（実測）
+
+```
+BRIO    index0=YUYV/MJPG/NV12(本命)  index2=GREY(赤外)  index1,3=メタデータ
+CamLink index0=NV12(本命)            index1=メタデータ
+```
+
+by-id のプレフィクスで物理カメラを束ね、`USABLE_FORMATS` に含まれる形式を
+持つノードを1つだけ選ぶ。**GREY のみのノードは赤外センサ**（Windows Hello 用）
+なので配信対象から外す。
+
+### 形式と解像度の決め方
+
+- MJPEG があれば優先（USB帯域が軽い）。無ければ raw
+- `MAX_OUT_WIDTH`/`MAX_OUT_HEIGHT`（既定 1920x1080）以下で最大の解像度を取り込む。
+  全部が上限超えなら最小を取り込んで VIC で縮小する（Cam Link は 4K しか
+  出さないのでこの経路になる）
+
+### 実測の検出結果
+
+```
+Logicool BRIO : MJPG 1920x1080 → 1920x1080
+Cam Link 4K   : NV12 3840x2160 → 1920x1080
+```
