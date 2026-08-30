@@ -232,3 +232,33 @@ Cam Link 4K   : NV12 3840x2160 → 1920x1080
 
 `HEALTH_POLL`（既定5秒）ごとに子プロセスの生死を見て、落ちていれば
 `RETRY_DELAY` 待ってから起動し直す。
+
+## 4K で配信する
+
+```
+Environment=MAX_OUT_WIDTH=3840
+Environment=MAX_OUT_HEIGHT=2160
+Environment=CAM_BITRATE=15000000
+```
+
+**先に UDP 受信バッファを拡張しておくこと**（`99-sfu-udp.conf`）。既定の
+208KB では 4K の I フレームを受けきれない。実測したフレームサイズ:
+
+| 送出解像度 | 平均 | 最大 | 208KB超のフレーム |
+|---|---|---|---|
+| 1080p (4K取込) | 25KB | **290KB** | 6/635 |
+| 1080p (BRIO) | 25KB | 90KB | 0/617 |
+
+**平均は同じでも最大が3倍違う**。溢れるのは瞬間最大値だけが原因。
+
+### 4K×2台の実測（90秒）
+
+```
+Cam Link 4K  : 15.0Mbps  score=10  loss=0  NACK=0
+Logicool BRIO:  7.5Mbps  score=10  loss=0  NACK=0
+Pi5 RcvbufErrors: +0
+Jetson: CPU 20-60% / NVENC 499MHz / VIC 75% / 47℃ / 6.4W
+ブラウザ: 両タイルとも 3840x2160 で描画
+```
+
+USB は 4K×2台（Cam Link 非圧縮 + BRIO MJPEG）でも URB エラーがほぼ出ない。
