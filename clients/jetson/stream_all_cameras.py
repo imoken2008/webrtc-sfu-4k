@@ -32,6 +32,9 @@ USABLE_FORMATS = ("MJPG", "YUYV", "NV12", "UYVY", "YU12", "H264")
 MAX_OUT_W = int(os.environ.get("MAX_OUT_WIDTH", "1920"))
 MAX_OUT_H = int(os.environ.get("MAX_OUT_HEIGHT", "1080"))
 BITRATE = os.environ.get("CAM_BITRATE", "6000000")
+# 音声も一緒に送るか。カメラごとの ALSA カードを自動で対応付ける。
+WITH_AUDIO = os.environ.get("WITH_AUDIO", "1") != "0"
+AUDIO_BITRATE = os.environ.get("AUDIO_BITRATE", "128000")
 FPS = os.environ.get("CAM_FPS", "30")
 # 落ちたストリーマを拾い直すまでの待ち。カメラ再接続直後は
 # デバイスの準備が終わっておらず、すぐ再試行しても また落ちる。
@@ -65,6 +68,40 @@ def node_formats(dev):
         if m and cur:
             formats[cur].append((int(m.group(1)), int(m.group(2))))
     return formats
+
+
+def alsa_card_for(usb_path):
+    """その USB デバイスに属する ALSA 録音カード名を探す。
+
+    /proc/asound/cards には各カードの USB パスが載っている:
+      0 [BRIO] : USB-Audio - Logicool BRIO
+                 Logicool BRIO at usb-3610000.xhci-3.2, super speed
+    映像の by-id から辿った USB パス(例 3.2)と突き合わせる。
+    カメラごとにマイクが違うので、取り違えると別のカメラの音が乗る。
+    """
+    try:
+        with open("/proc/asound/cards") as f:
+            text = f.read()
+    except Exception:
+        return None
+    # 「N [NAME  ]: ...」と、その次行の "at usb-...-<path>," を対にする
+    entries = re.findall(r"^\s*(\d+)\s*\[([^\]]+)\]:.*\n\s+(.*)$",
+                         text, re.MULTILINE)
+    for _idx, name, detail in entries:
+        m = re.search(r"at usb-[^,]*?-([0-9.]+)[,\s]", detail)
+        if m and usb_path and m.group(1) == usb_path:
+            return name.strip()
+    return None
+
+
+def usb_path_of(dev):
+    """/dev/videoN が属する USB のポートパス（例 3.2）を返す"""
+    try:
+        real = os.path.realpath(f"/sys/class/video4linux/{os.path.basename(dev)}/device")
+    except Exception:
+        return None
+    m = re.findall(r"/\d+-([0-9.]+)(?::|/)", real + "/")
+    return m[-1] if m else None
 
 
 def card_name(dev):
@@ -107,12 +144,14 @@ def discover():
             out_h = min(cap_h, MAX_OUT_H)
 
             name = re.sub(r"[^a-zA-Z0-9]+", "-", prefix).strip("-").lower()[:40]
+            audio = alsa_card_for(usb_path_of(real)) if WITH_AUDIO else None
             cams[name] = {
                 "link": link,
                 "display": card_name(real),
                 "cap": (cap_w, cap_h),
                 "out": (out_w, out_h),
                 "fmt": fmt,
+                "audio": audio,
             }
             break  # この物理カメラは1ノードだけ使う
     return cams
@@ -132,12 +171,16 @@ class Streamer:
             "CAM_BITRATE": BITRATE,
             "SFU_INGEST_NAME": name,
             "SFU_DISPLAY_NAME": info["display"],
+            "AUDIO_DEVICE": info.get("audio") or "",
+            "AUDIO_BITRATE": AUDIO_BITRATE,
         })
         cw, ch = info["cap"]
         ow, oh = info["out"]
         scale = "" if (cw, ch) == (ow, oh) else f" → {ow}x{oh}"
-        log(f"起動: {info['display']} [{name}] {info['fmt']} {cw}x{ch}{scale}")
+        au = f" +音声({info['audio']})" if info.get("audio") else " (音声なし)"
+        log(f"起動: {info['display']} [{name}] {info['fmt']} {cw}x{ch}{scale}{au}")
         self.proc = subprocess.Popen([sys.executable, STREAMER], env=env)
+        self.started_at = time.time()             # 短命判定に使う
 
     def alive(self):
         return self.proc.poll() is None
@@ -171,6 +214,34 @@ def udev_monitor():
         return None
 
 
+# 起動してすぐ落ちたカメラの、次に試すまでの待ち時間（秒）。
+# Cam Link は HDMI 入力が無信号でも 1080p を申告してデバイスとしては
+# 開けるが、フレームを1枚も出さずに落ちる。そのまま即再試行すると
+# 30 秒ごとに ingest を登録し直してログが埋まるので、短命な終わり方が
+# 続くあいだは段階的に間隔を伸ばす。信号が戻れば一発で成功して 0 に戻る。
+RESTART_BACKOFF = [0, 0, 30, 60, 120, 300]
+# これより短命なら「まともに動かなかった」とみなす
+SHORT_LIVED_SEC = 20
+
+_backoff = {}          # name → (試行回数, 次に起動してよい時刻)
+
+
+def _may_start(name):
+    tries, not_before = _backoff.get(name, (0, 0.0))
+    return time.time() >= not_before
+
+
+def _note_exit(name, lived):
+    """終わり方を見て次の待ち時間を決める"""
+    if lived >= SHORT_LIVED_SEC:
+        _backoff.pop(name, None)                  # ちゃんと動いていた
+        return 0
+    tries = _backoff.get(name, (0, 0.0))[0] + 1
+    wait = RESTART_BACKOFF[min(tries, len(RESTART_BACKOFF) - 1)]
+    _backoff[name] = (tries, time.time() + wait)
+    return wait
+
+
 def reconcile(running):
     """検出結果と起動中のプロセスを突き合わせる"""
     cams = discover()
@@ -178,13 +249,21 @@ def reconcile(running):
     for name in list(running):
         if name not in cams:
             running.pop(name).stop()               # カメラが抜かれた
+            _backoff.pop(name, None)
         elif not running[name].alive():
             # 落ちたものはこの場で起動し直す。次の udev イベントを待つと
             # 何も起きないまま止まったままになる（実際にそうなった）。
-            log(f"落ちていたので起動し直す: {name}")
-            running.pop(name)
+            st = running.pop(name)
+            lived = time.time() - getattr(st, "started_at", 0)
+            wait = _note_exit(name, lived)
+            if wait:
+                log(f"すぐ落ちた({lived:.0f}秒): {name} — {wait}秒待ってから再試行する")
+            else:
+                log(f"落ちていたので起動し直す: {name}")
 
     for name, info in cams.items():
+        if name not in running and not _may_start(name):
+            continue
         if name not in running:
             running[name] = Streamer(name, info)
     return cams

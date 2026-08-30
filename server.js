@@ -262,6 +262,8 @@ async function main() {
     if (!ing) return false;
     try { ing.producer.close(); } catch (_) {}
     try { ing.transport.close(); } catch (_) {}
+    try { ing.audioProducer?.close(); } catch (_) {}
+    try { ing.audioTransport?.close(); } catch (_) {}
     room.ingests.delete(name);
     if (io) io.to(roomId).emit('producerClosed', { producerId: ing.producer.id });
     console.log(`[ingest] stopped: ${roomId}/${name}`);
@@ -276,6 +278,9 @@ async function main() {
         displayName = 'Webカメラ',
         payloadType: reqPt,
         ssrc        = 22222222,
+        audio: withAudio = false,
+        audioPayloadType,
+        audioSsrc   = 33333333,
       } = req.body || {};
 
       // 再実行は「張り直し」として扱う（ffmpeg 再起動時に呼ばれる）
@@ -336,7 +341,46 @@ async function main() {
         appData: { source: 'ingest', name },
       });
 
-      room.ingests.set(name, { transport, producer, displayName });
+      // ── 音声（任意） ────────────────────────────────────────────────
+      // 映像とは別の PlainTransport を張る。同じ transport に相乗りさせると
+      // SSRC の取り違えが起きやすく、片方の停止がもう片方を巻き込む。
+      // peerId は映像と同じ ingest:<name> にするので、ブラウザ側では
+      // 同じタイルの MediaStream に音声トラックが加わる。
+      let audioTransport = null;
+      let audioProducer = null;
+      if (withAudio) {
+        const opus = room.router.rtpCapabilities.codecs.find(
+          (c) => c.mimeType.toLowerCase() === 'audio/opus'
+        );
+        if (!opus) throw new Error('router が Opus を持っていません');
+
+        audioTransport = await room.router.createPlainTransport({
+          listenInfo: { protocol: 'udp', ip: '0.0.0.0', announcedAddress: ANNOUNCED_IP },
+          rtcpMux: true,
+          comedia: true,
+        });
+        const audioPt = audioPayloadType ?? opus.preferredPayloadType ?? 111;
+        audioProducer = await audioTransport.produce({
+          kind: 'audio',
+          rtpParameters: {
+            mid: `${name}-audio`,
+            codecs: [{
+              mimeType:  'audio/opus',
+              payloadType: audioPt,
+              clockRate: 48000,
+              channels:  2,
+              parameters: { ...opus.parameters },
+              rtcpFeedback: [{ type: 'transport-cc' }],
+            }],
+            encodings: [{ ssrc: audioSsrc }],
+          },
+          appData: { source: 'ingest', name, kind: 'audio' },
+        });
+      }
+
+      room.ingests.set(name, {
+        transport, producer, displayName, audioTransport, audioProducer,
+      });
 
       producer.observer.once('close', () => room.ingests.delete(name));
 
@@ -349,6 +393,15 @@ async function main() {
           kind:        'video',
           source:      'ingest',
         });
+        if (audioProducer) {
+          io.to(roomId).emit('newProducer', {
+            producerId:  audioProducer.id,
+            peerId:      `ingest:${name}`,
+            displayName,
+            kind:        'audio',
+            source:      'ingest',
+          });
+        }
       }
 
       const info = {
@@ -362,6 +415,12 @@ async function main() {
         // 送信側のエンコーダはこのプロファイルに合わせること。
         // 42e01f=Constrained Baseline 3.1 / 640034=High 5.2
         profileLevelId: routerH264.parameters?.['profile-level-id'] ?? null,
+        audio: audioProducer ? {
+          producerId:  audioProducer.id,
+          port:        audioTransport.tuple.localPort,
+          payloadType: audioProducer.rtpParameters.codecs[0].payloadType,
+          ssrc:        audioSsrc,
+        } : null,
       };
       console.log(`[ingest] started: ${roomId}/${name} → udp/${info.port} pt=${payloadType} ssrc=${ssrc}`);
       res.json(info);
@@ -387,8 +446,16 @@ async function main() {
         try {
           const pstats = await ing.producer.getStats();
           const tstats = await ing.transport.getStats();
+          // 音声は別 producer なので、あるときだけ足す。
+          const astats = ing.audioProducer
+            ? await ing.audioProducer.getStats() : [];
           out.push({
             roomId, name, displayName: ing.displayName,
+            audio: astats.map((x) => ({
+              bitrate: x.bitrate, packetCount: x.packetCount,
+              byteCount: x.byteCount, packetsLost: x.packetsLost,
+              jitter: x.jitter,
+            })),
             // score は mediasoup が算出する受信品質 (0-10)
             score: ing.producer.score,
             producer: pstats.map((x) => ({
@@ -500,6 +567,15 @@ async function main() {
             kind: ing.producer.kind,
             source: 'ingest',
           });
+          if (ing.audioProducer) {
+            existingProducers.push({
+              producerId: ing.audioProducer.id,
+              peerId: `ingest:${name}`,
+              displayName: ing.displayName,
+              kind: 'audio',
+              source: 'ingest',
+            });
+          }
         }
 
         console.log(`[join] "${peer.displayName}" → room "${roomId}"`);

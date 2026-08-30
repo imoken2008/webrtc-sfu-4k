@@ -28,6 +28,11 @@ FPS     = int(os.environ.get("CAM_FPS", "30"))
 # ハブ(Pi 3)の Ethernet が 100Mbps 上限で、視聴者数ぶん出ていく。
 # ここを上げるとハブ側の帯域が先に飽和する。
 BITRATE = int(os.environ.get("CAM_BITRATE", "4000000"))
+
+# 音声を一緒に送るか。ALSA のカード名（arecord -l の [] 内の名前）を指定する。
+# 空なら映像のみ。BRIO なら内蔵マイク、Cam Link なら HDMI 入力に乗ってきた音。
+AUDIO_DEVICE = os.environ.get("AUDIO_DEVICE", "")
+AUDIO_BITRATE = int(os.environ.get("AUDIO_BITRATE", "128000"))
 # 送出解像度。未指定ならキャプチャ解像度のまま。
 # Cam Link のようにキャプチャが4K固定の機器では、ここで縮小して
 # ハブ(Pi 3 / 100Mbps)の帯域に見合ったサイズにする。
@@ -110,14 +115,30 @@ def camera_supports_mjpeg(dev):
     return False
 
 
+def alsa_card_present(card: str) -> bool:
+    """指定した ALSA カード名が今も存在するか。
+
+    音声は映像と同じ gst-launch に並べているので、存在しないカードを指定すると
+    パイプライン全体が起動できず映像まで止まる。カメラが抜き差しされてカード名が
+    変わることがあるため、組み立てる直前に確かめる。
+    """
+    try:
+        with open("/proc/asound/cards", encoding="utf-8", errors="replace") as f:
+            return f"[{card:<15}]" in f.read() or f"[{card}" in f.read()
+    except OSError:
+        return False
+
+
 def main() -> int:
     if not os.path.exists(DEV):
         log(f"カメラが見つかりません: {DEV}")
         sys.exit(1)
 
-    log(f"ingest を要求: {HUB} (room={ROOM} name={NAME})")
+    log(f"ingest を要求: {HUB} (room={ROOM} name={NAME}"
+        f"{' +音声' if AUDIO_DEVICE else ''})")
     res = post_json(f"{HUB}/api/ingest/start",
-                    {"roomId": ROOM, "name": NAME, "displayName": DISP})
+                    {"roomId": ROOM, "name": NAME, "displayName": DISP,
+                     "audio": bool(AUDIO_DEVICE)})
     if not res.get("ok"):
         log(f"ingest 失敗: {res}")
         sys.exit(1)
@@ -161,6 +182,31 @@ def main() -> int:
         "!", f"udpsink host={ip} port={port} sync=false async=false",
     ]
 
+    # ── 音声（任意） ────────────────────────────────────────────────
+    # 映像とは別の RTP ストリームとして、ハブが返した音声用ポートへ送る。
+    # 同じ gst-launch 内に並べるので、片方が落ちればもう片方も止まり、
+    # supervisor が丸ごと張り直す（音声だけ残る中途半端な状態を作らない）。
+    audio_info = res.get("audio")
+    if AUDIO_DEVICE and not alsa_card_present(AUDIO_DEVICE):
+        log(f"音声カード {AUDIO_DEVICE} が見つからないので映像のみで続行する")
+        audio_info = None
+    if AUDIO_DEVICE and audio_info:
+        log(f"音声: {AUDIO_DEVICE} → {ip}:{audio_info['port']} "
+            f"pt={audio_info['payloadType']} ssrc={audio_info['ssrc']}")
+        pipeline += [
+            "alsasrc", f"device=hw:{AUDIO_DEVICE}",
+            # ライブ入力なのでバッファを短くして遅延を抑える
+            "buffer-time=40000", "latency-time=10000", "provide-clock=false",
+            "!", "audioconvert", "!", "audioresample",
+            "!", "audio/x-raw,rate=48000,channels=2",
+            "!", "opusenc", f"bitrate={AUDIO_BITRATE}",
+            "audio-type=generic", "frame-size=20", "inband-fec=true",
+            "!", f"rtpopuspay pt={audio_info['payloadType']} ssrc={audio_info['ssrc']} mtu=1200",
+            "!", f"udpsink host={ip} port={audio_info['port']} sync=false async=false",
+        ]
+    elif AUDIO_DEVICE:
+        log("音声を要求したがハブが受け口を返さなかった。映像のみで続行する")
+
     # gst_parse_launchv は argv の1要素を1トークンとして扱うため、
     # スペースを含む要素をそのまま渡すと "syntax error" になる。
     # 単語ごとに分割してから渡すこと。
@@ -174,11 +220,20 @@ def main() -> int:
     # 確認し、消えていたら自分から終了して再登録させる。
     proc = subprocess.Popen(cmd)
     try:
+        next_check = time.time() + HEALTH_INTERVAL
         while True:
-            time.sleep(HEALTH_INTERVAL)
-            if proc.poll() is not None:
+            # gst の終了は 1 秒以内に拾う。ここを HEALTH_INTERVAL 間隔で
+            # 見ていると、即死したパイプラインでも「20 秒以上生きていた」
+            # ように見えて、supervisor 側の再試行バックオフが効かなくなる。
+            try:
+                proc.wait(timeout=1)
                 log(f"gst-launch が終了 (rc={proc.returncode})")
                 return proc.returncode
+            except subprocess.TimeoutExpired:
+                pass
+            if time.time() < next_check:
+                continue
+            next_check = time.time() + HEALTH_INTERVAL
             if not ingest_alive():
                 log("ハブ側の ingest が消えたので再登録する")
                 proc.terminate()
