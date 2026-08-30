@@ -103,3 +103,44 @@ allow-interfaces=eth0
 
 **注意**: 有線を抜くと `pi5.local` が引けなくなる。無線運用に戻すときは
 この行を `allow-interfaces=eth0,wlan0` にするか、コメントアウトする。
+
+## ダッシュボードとハブを同一オリジンに統合（証明書1枚で済ませる）
+
+従来はダッシュボード(5443)とハブ(8443)が**別オリジン**だったため、自己署名
+証明書をブラウザに**2回**承認させる必要があった。片方でも未承認だと
+socket.io の接続だけが黙って失敗し、**ページは出るが映像が来ない**という
+分かりにくい壊れ方をする（実際にこれで長時間はまった）。
+
+```
+[sfu] error: ハブに接続できません (websocket error)
+→ 画面は「まだ誰もカメラを送っていません」のまま
+```
+
+nginx で TLS を1箇所に集約して解決する。
+
+```
+https://pi5.local:5443
+   ├─ /socket.io/   → ハブ 127.0.0.1:8080（WebSocket 中継）
+   ├─ /api/ingest/  → ハブ 127.0.0.1:8080
+   ├─ /health       → ハブ 127.0.0.1:8080
+   └─ /             → ダッシュボード 127.0.0.1:5000
+```
+
+**ダッシュボード自身は socket.io を使っていない**ので `/socket.io/` が空いており、
+クライアントを改修せずに済む（`SFU_HUB_HTTPS_URL=https://pi5.local:5443` を
+指すだけでよい）。
+
+### 手順
+
+1. Flask 側の HTTPS を止めて 5443 を空ける（`ssl/cert.pem` `ssl/key.pem` を退避。
+   app.py は証明書が無ければ HTTPS を立てない）
+2. `nginx-dashboard.conf` を `/etc/nginx/sites-available/dashboard` に置いて有効化
+3. `ai-secretary.service.d/sfu.conf` で `SFU_HUB_HTTPS_URL=https://pi5.local:5443`
+
+WebSocket は `proxy_read_timeout 3600s` と `proxy_buffering off` が必須。
+無いと無通信で切られる。
+
+### 検証
+
+Chrome の `--ignore-certificate-errors-spki-list` で **5443 の証明書だけを信頼**
+させた状態（＝実際の利用条件）で、`live 2人/2トラック`・両タイルの描画を確認。
