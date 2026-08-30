@@ -144,3 +144,49 @@ WebSocket は `proxy_read_timeout 3600s` と `proxy_buffering off` が必須。
 
 Chrome の `--ignore-certificate-errors-spki-list` で **5443 の証明書だけを信頼**
 させた状態（＝実際の利用条件）で、`live 2人/2トラック`・両タイルの描画を確認。
+
+## カクつきの原因は UDP 受信バッファ溢れだった（実測で特定）
+
+4K キャプチャ(Cam Link)の映像だけが定期的にカクつき、**複数の視聴ブラウザで
+同時に**発生していた。= 受信側ではなく配信側かハブで欠落している。
+
+### 切り分けの経過
+
+| 疑ったもの | 実測結果 | 判定 |
+|---|---|---|
+| USB 帯域の競合 | 2台同時でも 30.00fps / URBエラー0 | ❌ シロ |
+| Jetson の負荷 | CPU 20〜50% / NVENC余裕 / 温度47℃ | ❌ シロ |
+| ネットワーク品質 | BRIO は同一経路でロス0 | ❌ シロ |
+| **UDP 受信バッファ** | **RcvbufErrors +233/90秒** | ✅ **真因** |
+
+Cam Link だけが該当したのは、**4K 由来の映像はディテールが多く I フレームが
+巨大**になり、一気に届いてソケットの受信バッファを溢れさせるため。BRIO の
+1080p 由来はフレームが小さく収まっていた。
+
+### 対処
+
+Linux 既定の `rmem_max` は **212992 (208KB)** しかない。32MB へ拡張する。
+
+`/etc/sysctl.d/99-sfu-udp.conf`（ハブ側）:
+```
+net.core.rmem_max = 33554432
+net.core.rmem_default = 16777216
+net.core.netdev_max_backlog = 5000
+```
+送信側(Jetson)も `wmem_max` を同様に拡張する。`sysctl -p` 後に
+**サービスの再起動が必要**（ソケットは生成時のサイズを引き継ぐため）。
+
+### 効果（90秒の実測）
+
+| | 修正前 | 修正後 |
+|---|---|---|
+| パケットロス | 732 | **0** |
+| NACK | 393 | **0** |
+| PLI | 31 | **0** |
+| RcvbufErrors | 233 | **0** |
+
+### 計測方法
+
+ハブに `/api/ingest/stats` を追加してある（producer/transport の実測値）。
+`watch_stats.py` で時系列に追える。`packetsLost` と `pliCount` の増加が
+そのままカクつきに対応する。

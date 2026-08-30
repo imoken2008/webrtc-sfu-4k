@@ -377,6 +377,43 @@ async function main() {
     res.json({ ok: true, stopped });
   });
 
+  // 配信品質の計測用。producer/transport の実測値をそのまま返す。
+  // カクつきの原因が「配信元→ハブ」の欠落なのか、それ以降なのかを
+  // 切り分けるために使う。
+  app.get('/api/ingest/stats', async (_req, res) => {
+    const out = [];
+    for (const [roomId, room] of rooms) {
+      for (const [name, ing] of room.ingests) {
+        try {
+          const pstats = await ing.producer.getStats();
+          const tstats = await ing.transport.getStats();
+          out.push({
+            roomId, name, displayName: ing.displayName,
+            // score は mediasoup が算出する受信品質 (0-10)
+            score: ing.producer.score,
+            producer: pstats.map((x) => ({
+              bitrate: x.bitrate, packetCount: x.packetCount,
+              byteCount: x.byteCount, packetsLost: x.packetsLost,
+              packetsDiscarded: x.packetsDiscarded,
+              packetsRepaired: x.packetsRepaired, nackCount: x.nackCount,
+              pliCount: x.pliCount, firCount: x.firCount,
+              jitter: x.jitter, roundTripTime: x.roundTripTime,
+            })),
+            transport: tstats.map((x) => ({
+              bytesReceived: x.bytesReceived, recvBitrate: x.recvBitrate,
+              bytesSent: x.bytesSent, sendBitrate: x.sendBitrate,
+              rtpBytesReceived: x.rtpBytesReceived, rtpRecvBitrate: x.rtpRecvBitrate,
+            })),
+            consumers: [...room.peers.values()].reduce((n, pr) => n + pr.consumers.size, 0),
+          });
+        } catch (e) {
+          out.push({ roomId, name, error: e.message });
+        }
+      }
+    }
+    res.json({ ok: true, stats: out });
+  });
+
   app.get('/api/ingest/status', (_req, res) => {
     const out = [];
     for (const [roomId, room] of rooms) {
