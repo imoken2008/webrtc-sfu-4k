@@ -11,6 +11,7 @@ import json
 import os
 import re
 import shutil
+import signal
 import subprocess
 import sys
 import time
@@ -272,10 +273,20 @@ def main() -> int:
                 except subprocess.TimeoutExpired:
                     proc.kill()
                 return 1
-    except KeyboardInterrupt:
-        proc.terminate()
+    except (KeyboardInterrupt, SystemExit):
         return 0
+    finally:
+        # supervisor からの SIGTERM で Python だけ死ぬと gst-launch が孤児として
+        # 残り、抜かれた古いデバイスを掴んだまま居座っていた（実際に3本溜まった）。
+        if proc.poll() is None:
+            proc.terminate()
+            try:
+                proc.wait(timeout=10)
+            except subprocess.TimeoutExpired:
+                proc.kill()
 
 
 if __name__ == "__main__":
+    # SIGTERM の既定動作は即死で finally が走らない。SystemExit に変えて片付けさせる
+    signal.signal(signal.SIGTERM, lambda *_: sys.exit(0))
     sys.exit(main() or 0)

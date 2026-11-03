@@ -179,7 +179,9 @@ class Streamer:
         scale = "" if (cw, ch) == (ow, oh) else f" → {ow}x{oh}"
         au = f" +音声({info['audio']})" if info.get("audio") else " (音声なし)"
         log(f"起動: {info['display']} [{name}] {info['fmt']} {cw}x{ch}{scale}{au}")
-        self.proc = subprocess.Popen([sys.executable, STREAMER], env=env)
+        # 孫の gst-launch ごと止められるよう、カメラごとにプロセスグループを分ける
+        self.proc = subprocess.Popen([sys.executable, STREAMER], env=env,
+                                     start_new_session=True)
         self.started_at = time.time()             # 短命判定に使う
 
     def alive(self):
@@ -188,13 +190,15 @@ class Streamer:
     def stop(self):
         log(f"停止: {self.info['display']} [{self.name}]")
         try:
-            self.proc.terminate()
+            os.killpg(self.proc.pid, signal.SIGTERM)
             self.proc.wait(timeout=10)
         except Exception:
-            try:
-                self.proc.kill()
-            except Exception:
-                pass
+            pass
+        # 親が先に終わっても gst-launch が残らないよう、グループごと確実に落とす
+        try:
+            os.killpg(self.proc.pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
 
 
 def udev_monitor():

@@ -344,6 +344,27 @@ udevadm info /sys/class/sound/card0 | grep PULSE_IGNORE   # E: PULSE_IGNORE=1
 実地試験（USB の `authorized` を 0→1 にして挿し直しを再現）:
 再接続から約8秒で 4K 配信が復帰、busy は発生せず。
 
+### 4. 停止したストリーマの gst-launch が孤児として残る
+
+supervisor が `stream_to_sfu.py` に SIGTERM を送ると、Python の既定動作で
+即死し、子の gst-launch が親を失って残っていた（抜かれた古いデバイスを
+掴んだまま3本溜まっていた）。
+
+- `stream_to_sfu.py`: SIGTERM を `SystemExit` に変え、`finally` で gst を止める
+- `stream_all_cameras.py`: カメラごとに `start_new_session=True` で起動し、
+  停止は `killpg` でプロセスグループごと落とす
+
+実地試験: USB を10秒切り離して「停止」経路を通し、切断中の gst は0本、
+再接続後は1本だけになることを確認。
+
+### Cam Link の `not-negotiated` は切断の連発中に出る
+
+HDMI 入力が不安定な間は Cam Link が数十秒おきに USB から消えては戻り
+（5分で6回）、その合間に起動したパイプラインが `not-negotiated (-4)` で落ちる。
+`--list-formats-ext` では 29.970fps と出るが、`framerate=30/1` の固定 caps でも
+正常に取れるのでフレームレートは原因ではない。落ちてもバックオフ
+（0→30→60秒…）明けに自動で再開する。
+
 ### 参考: 再起動しても LAN に出てこない件
 
 失敗した起動を syslog で追うと、OS は起動完了しており、eth0 は
