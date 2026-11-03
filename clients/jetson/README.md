@@ -309,3 +309,45 @@ usb 2-3.1: USB disconnect
 なお **Cam Link は HDMI 入力の解像度をそのまま USB に流す**。4K 入力だと
 `3840x2160 NV12 30fps = 373MB/s` で USB3.0 実効上限(約400MB/s)の93%を使う。
 **ソース側を 1080p にすれば 1/4 に減る**ので、安定性を優先するなら有効。
+
+## 再起動・挿し直しで止まらないための対策（2026-11-03）
+
+Jetson 再起動後とカメラ挿し直し後に、配信が数分止まる事象が3つ重なっていた。
+
+### 1. バックオフ明けに再試行されない
+
+「すぐ落ちた — 30秒待ってから再試行する」と出しながら、実際は次の
+保険の再スキャン（`SCAN_INTERVAL`=300秒）まで再起動されなかった。
+バックオフ中のカメラは `running` から外れるため死活監視に引っかからない。
+メインループで「待ち時間が明けたカメラ」があれば `reconcile` するようにした。
+
+### 2. 起動直後にハブの名前が引けない
+
+ネットワーク(DHCP/mDNS)より先に `stream_to_sfu.py` が走り、
+`pi5.local` の名前解決に失敗して即死していた。`/api/ingest/start` は
+ハブに繋がるまで `HUB_WAIT`（既定120秒）、3秒おきに再試行する。
+
+### 3. 挿し直した瞬間に PulseAudio とマイクを取り合う
+
+PulseAudio（gdm とログインユーザーの2つ）が新しい USB サウンドカードを
+開きに行き、同時に起動した配信が `Device 'hw:C4K' is busy` で落ちる。
+`51-camera-no-pulseaudio.rules` でカメラのカードに `PULSE_IGNORE=1` を付け、
+PulseAudio に触らせない。
+
+```
+sudo cp 51-camera-no-pulseaudio.rules /etc/udev/rules.d/
+sudo udevadm control --reload-rules
+sudo udevadm trigger --action=change --subsystem-match=sound
+udevadm info /sys/class/sound/card0 | grep PULSE_IGNORE   # E: PULSE_IGNORE=1
+```
+
+実地試験（USB の `authorized` を 0→1 にして挿し直しを再現）:
+再接続から約8秒で 4K 配信が復帰、busy は発生せず。
+
+### 参考: 再起動しても LAN に出てこない件
+
+失敗した起動を syslog で追うと、OS は起動完了しており、eth0 は
+1Gbps でリンクアップしているのに **DHCP が45秒ごとにタイムアウトし続けていた**
+（2時間以上続いた回もある）。リンクが張り直された直後に1秒で取得できたので、
+Jetson 側ではなくスイッチ/ケーブル側の疑いが強い。応急処置は LAN ケーブルの抜き差し。
+journald は永続化されていないので、前回起動の記録は `/var/log/syslog` を見る。

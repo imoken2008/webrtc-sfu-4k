@@ -56,6 +56,8 @@ ENC_PROFILE = {"42": (0, "Constrained Baseline"), "4d": (2, "Main"), "64": (4, "
 
 # ハブ側の ingest 生存確認の間隔（秒）
 HEALTH_INTERVAL = int(os.environ.get("HEALTH_INTERVAL", "20"))
+# 起動時にハブへ繋がるまで待つ上限（秒）
+HUB_WAIT = int(os.environ.get("HUB_WAIT", "120"))
 
 
 def ingest_alive() -> bool:
@@ -80,6 +82,24 @@ def post_json(url, payload):
                                  headers={"Content-Type": "application/json"})
     with urllib.request.urlopen(req, timeout=10) as r:
         return json.loads(r.read().decode())
+
+
+def request_ingest(payload):
+    """ハブに ingest を要求する。繋がるまで HUB_WAIT 秒は待つ。
+
+    起動直後はネットワーク(DHCP/mDNS)より先にここへ来ることがあり、
+    pi5.local が引けずに即死していた。落ちると supervisor のバックオフで
+    再開が遅れるので、ここで粘る。
+    """
+    deadline = time.time() + HUB_WAIT
+    while True:
+        try:
+            return post_json(f"{HUB}/api/ingest/start", payload)
+        except OSError as e:                     # URLError も OSError の子
+            if time.time() >= deadline:
+                raise
+            log(f"ハブに繋がらないので待つ: {e}")
+            time.sleep(3)
 
 
 def camera_supports_mjpeg(dev):
@@ -145,9 +165,8 @@ def main() -> int:
 
     log(f"ingest を要求: {HUB} (room={ROOM} name={NAME}"
         f"{' +音声' if AUDIO_DEVICE else ''})")
-    res = post_json(f"{HUB}/api/ingest/start",
-                    {"roomId": ROOM, "name": NAME, "displayName": DISP,
-                     "audio": bool(AUDIO_DEVICE)})
+    res = request_ingest({"roomId": ROOM, "name": NAME, "displayName": DISP,
+                          "audio": bool(AUDIO_DEVICE)})
     if not res.get("ok"):
         log(f"ingest 失敗: {res}")
         sys.exit(1)

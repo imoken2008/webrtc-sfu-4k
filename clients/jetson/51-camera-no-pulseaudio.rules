@@ -1,0 +1,12 @@
+# カメラのマイクを PulseAudio に掴ませない。
+#
+# 音声は stream_to_sfu.py が alsasrc で hw:<カード> を直接開く。
+# PulseAudio(gdm/ユーザーの両方) は USB の抜き差しを検知すると新しい
+# カードを開きに行くため、同じタイミングで配信を起動すると
+# "Device 'hw:C4K' is busy" で gst-launch ごと落ちる（実際に発生）。
+# PULSE_IGNORE を立てると module-udev-detect がそのカードを無視する。
+#
+# 0fd9:0066 = Elgato Cam Link 4K
+# 046d:085e = Logicool BRIO
+SUBSYSTEM=="sound", ATTRS{idVendor}=="0fd9", ATTRS{idProduct}=="0066", ENV{PULSE_IGNORE}="1"
+SUBSYSTEM=="sound", ATTRS{idVendor}=="046d", ATTRS{idProduct}=="085e", ENV{PULSE_IGNORE}="1"

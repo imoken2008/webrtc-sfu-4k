@@ -329,6 +329,13 @@ def main():
             time.sleep(RETRY_DELAY)
             triggered = True
 
+        # バックオフ待ちのカメラは running から外れているので、上の dead には
+        # 出てこない。待ち時間が明けたらここで拾わないと、次の再スキャン
+        # (SCAN_INTERVAL) まで止まったままになる（実際に 30 秒待ちのはずが
+        # 5 分止まった）。
+        if any(n not in running and _may_start(n) for n in _backoff):
+            triggered = True
+
         if triggered or (time.time() - last_scan) >= SCAN_INTERVAL:
             reconcile(running)
             last_scan = time.time()
